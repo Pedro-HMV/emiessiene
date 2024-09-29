@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MSN Messenger</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #e9eaed;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .msn-window {
+            width: 400px;
+            height: 300px;
+            background-color: #ffffff;
+            border: 1px solid #8cb8e8;
+            border-radius: 8px 8px 0 0;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .msn-header {
+            background: linear-gradient(to bottom, #7ba7e1, #6193d2);
+            color: white;
+            padding: 5px 10px;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .msn-header-buttons {
+            display: flex;
+        }
+
+        .msn-header-button {
+            width: 16px;
+            height: 16px;
+            margin-left: 5px;
+            border-radius: 50%;
+        }
+
+        .minimize {
+            background-color: #ffd700;
+        }
+
+        .maximize {
+            background-color: #32cd32;
+        }
+
+        .close {
+            background-color: #ff4500;
+        }
+
+        .msn-content {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .msn-icon {
+            width: 64px;
+            height: 64px;
+            background-color: #ffff00;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        .msn-message {
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .msn-button {
+            background-color: #7ba7e1;
+            color: white;
+            border: none;
+            padding: 5px 15px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="msn-window">
+        <div class="msn-header">
+            <span>Atenção</span>
+            <div class="msn-header-buttons">
+                <div class="msn-header-button minimize"></div>
+                <div class="msn-header-button maximize"></div>
+                <div class="msn-header-button close"></div>
+            </div>
+        </div>
+        <div class="msn-content">
+            <div class="msn-icon">!</div>
+            <div class="msn-message">
+                Você tem certeza que deseja sair?<br>
+                Sua conversa será encerrada.
+            </div>
+            <button class="msn-button">OK</button>
+        </div>
+    </div>
+</body>
+
+</html>
