@@ -1,7 +1,7 @@
 mod app;
 mod components;
 
-use app::LoginPage;
+use components::loginpage_component::LoginPage;
 use components::mainpage_component::MainPage;
 use leptos::*;
 use leptos_router::*;
