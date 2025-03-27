@@ -216,7 +216,6 @@ pub fn MainPage() -> impl IntoView {
                                                         availability=create_signal(f.availability.clone()).0
                                                         name=create_signal(f.name.to_string()).0
                                                         status=create_signal(f.status.to_string()).0
-                                                        email=create_signal(f.email.to_string()).0
                                                         open_chat=open_new_chat
                                                         order=Some(i)
                                                     />
@@ -240,7 +239,6 @@ pub fn MainPage() -> impl IntoView {
                                                         availability=create_signal(f.availability.clone()).0
                                                         name=create_signal(f.name.to_string()).0
                                                         status=create_signal(f.status.to_string()).0
-                                                        email=create_signal(f.email.to_string()).0
                                                         open_chat=open_new_chat
                                                         order=None
                                                     />

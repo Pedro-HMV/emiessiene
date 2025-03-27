@@ -1,12 +1,11 @@
-use leptos::*;
 use super::models::Availability;
+use leptos::*;
 
 #[component]
 pub fn Friend(
     availability: ReadSignal<Availability>,
     name: ReadSignal<String>,
     status: ReadSignal<String>,
-    email: ReadSignal<String>,
     open_chat: impl Fn(usize) + 'static,
     order: Option<usize>,
 ) -> impl IntoView {
