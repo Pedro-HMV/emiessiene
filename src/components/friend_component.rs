@@ -1,5 +1,5 @@
 use super::models::Availability;
-use leptos::*;
+use leptos::prelude::*;
 
 #[component]
 pub fn Friend(

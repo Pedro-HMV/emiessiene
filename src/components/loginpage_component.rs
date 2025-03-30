@@ -1,12 +1,12 @@
-use crate::components::models::Availability;
-use leptos::*;
-use leptos_router::use_navigate;
+use super::models::Availability;
+use leptos::prelude::*;
+use leptos_router::hooks::use_navigate;
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
-    let (_, set_availability) = create_signal(Availability::Online);
-    let (remember_me, set_remember_me) = create_signal(false);
-    let (auto_sign_in, set_auto_sign_in) = create_signal(false);
+    let (_, set_availability) = signal(Availability::Online);
+    let (remember_me, set_remember_me) = signal(false);
+    let (auto_sign_in, set_auto_sign_in) = signal(false);
     let navigate = use_navigate();
 
     let update_availability = move |ev| {

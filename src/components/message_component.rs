@@ -1,5 +1,6 @@
-use leptos::*;
 use super::models;
+use leptos::prelude::ElementChild;
+use leptos::prelude::*;
 use models::User;
 
 #[component]

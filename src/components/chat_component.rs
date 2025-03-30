@@ -1,14 +1,15 @@
-use leptos::*;
-use leptos::ev::SubmitEvent;
-use leptos::web_sys;
 use leptos::ev::KeyboardEvent;
+use leptos::ev::SubmitEvent;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos::view;
+use leptos::web_sys;
 use wasm_bindgen::JsCast;
 
-
-use models::User;
 use models::Friend;
-use crate::components::message_component::Message;
+use models::User;
 
+use super::message_component::Message;
 use super::models;
 
 #[component]
@@ -19,8 +20,8 @@ pub fn Chat(
     friend: ReadSignal<usize>,
     close: impl Fn(usize) + 'static,
 ) -> impl IntoView {
-    let (msg, set_msg) = create_signal(String::new());
-    let (message_list, set_message_list) = create_signal(Vec::new());
+    let (msg, set_msg) = signal(String::new());
+    let (message_list, set_message_list) = signal(Vec::new());
     let update_msg = move |ev| {
         let m = event_target_value(&ev);
         set_msg.set(m);
@@ -66,12 +67,12 @@ pub fn Chat(
                             show.set(false);
                         }
                     >
-                        { "⬅️" }
+                        "⬅️"
                     </button>
-                    <span class="chat_receiver">{ "👤" } {&friends.get().0[friend.get()].name}</span>
+                    <span class="chat_receiver">{format!("👤 {status}", status={friends.get().0[friend.get()].name.clone()})}</span>
                     <span class="chat_receiver-status-message">
-                        {&friends.get().0[friend.get()].status}
-                        <span class="ml-1">{format!("<{}>", &friends.get().0[friend.get()].email)}</span>
+                        {friends.get().0[friend.get()].status.clone()}
+                        <span class="ml-1">{format!("<{}>", friends.get().0[friend.get()].email.clone())}</span>
                     </span>
                     <button
                         class="close-button"
@@ -79,16 +80,16 @@ pub fn Chat(
                             close(friend.get());
                         }
                     >
-                        { "❌" }
+                        "❌"
                     </button>
                 </div>
                 <div class="chat_top-bar chat_icon-bar main_bordered">
-                    <div class="chat_config-btn">{"⚙️"}</div>
-                    <div class="chat_invite-btn">{"👤"}</div>
-                    <div class="chat_files-btn">{"📁"}</div>
-                    <div class="chat_webcam-btn">{"📷"}</div>
-                    <div class="chat_voice-btn">{"📞"}</div>
-                    <div class="chat_block-btn">{"🚫"}</div>
+                    <div class="chat_config-btn">"⚙️"</div>
+                    <div class="chat_invite-btn">"👤"</div>
+                    <div class="chat_files-btn">"📁"</div>
+                    <div class="chat_webcam-btn">"📷"</div>
+                    <div class="chat_voice-btn">"📞"</div>
+                    <div class="chat_block-btn">"🚫"</div>
                 </div>
                 <div class="chat-and-avatars flex-row">
                     <div class="left-column">
@@ -100,7 +101,7 @@ pub fn Chat(
                                         .iter()
                                         .map(|m| {
                                             view! {
-                                                <Message user=user content=create_signal(m.clone()).0 />
+                                                <Message user=user content=signal(m.clone()).0 />
                                             }
                                         })
                                         .collect::<Vec<_>>()
@@ -108,11 +109,11 @@ pub fn Chat(
                             </div>
                         </div>
                         <div class="chat_mid-bar chat_icon-bar main_bordered">
-                            <div class="chat_font-btn">{"🔤"}</div>
-                            <div class="chat_emote-btn">{"😊"}</div>
-                            <div class="chat_audio-btn">{"📢"}</div>
-                            <div class="chat_image-btn">{"🖼️"}</div>
-                            <div class="chat_nudge-btn">{"😵‍💫"}</div>
+                            <div class="chat_font-btn">"🔤"</div>
+                            <div class="chat_emote-btn">"😊"</div>
+                            <div class="chat_audio-btn">"📢"</div>
+                            <div class="chat_image-btn">"🖼️"</div>
+                            <div class="chat_nudge-btn">"😵‍💫"</div>
                         </div>
                         <div class="chat_message-input">
                             <form id="message-form" class="chat_message-form" on:submit=send_msg>
@@ -123,7 +124,7 @@ pub fn Chat(
                                     on:input=update_msg
                                     on:keypress=submit_on_enter
                                 ></textarea>
-                                <button type="submit">{ "Send" }</button>
+                                <button type="submit">"Send"</button>
                             </form>
                         </div>
                     </div>
@@ -131,15 +132,15 @@ pub fn Chat(
                         <div class="top-user flex-col user-block">
                             <div class="top-avatar avatar"></div>
                             <div class="below-avatar flex-row justify-between">
-                                <div class="webcam-icon">{"🎦"}</div>
-                                <div class="options-arrow">{"🔽"}</div>
+                                <div class="webcam-icon">"🎦"</div>
+                                <div class="options-arrow">"🔽"</div>
                             </div>
                         </div>
                         <div class="bottom-user flex-col user-block">
                             <div class="bottom-avatar avatar"></div>
                             <div class="below-avatar flex-row justify-between">
-                                <div class="webcam-icon">{"🎦"}</div>
-                                <div class="options-arrow">{"🔽"}</div>
+                                <div class="webcam-icon">"🎦"</div>
+                                <div class="options-arrow">"🔽"</div>
                             </div>
                         </div>
                     </div>
