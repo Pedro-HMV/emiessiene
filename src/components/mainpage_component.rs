@@ -7,13 +7,12 @@ use leptos_router::components::A;
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::{JsCast, JsValue};
 
+use super::friend_component::Friend;
 use super::models;
-use super::{chat_component::Chat, friend_component::Friend};
 use models::{Availability, Friend, UpdateUsernameArgs, User};
 
 #[component]
 pub fn MainPage() -> impl IntoView {
-    let (show_chat, set_show_chat) = signal(false);
     let (friend_id, set_friend_id) = signal(0);
     let (open_chats, set_open_chats) = signal(Vec::new());
     let (editing_user, set_editing_user) = signal(false);
@@ -24,6 +23,9 @@ pub fn MainPage() -> impl IntoView {
         availability: Availability::Online,
     });
     let (friends, set_friends) = signal((Vec::new(), Vec::new()));
+
+    let online_friends = move || friends.get().0;
+    let offline_friends = move || friends.get().1;
 
     let user_resource = LocalResource::new(|| async {
         let info = invoke("get_user", JsValue::null()).await;
@@ -88,15 +90,12 @@ pub fn MainPage() -> impl IntoView {
             }
         });
         set_friend_id.set(id);
-        set_show_chat.set(true);
     };
 
     let close_chat = move |id: usize| {
         set_open_chats.update(|chats| {
             chats.retain(|&x| x != id);
         });
-
-        set_show_chat.set(false);
     };
 
     let chat_tabs = move || {
@@ -112,7 +111,6 @@ pub fn MainPage() -> impl IntoView {
                         class:active=move || friend_id.get() == id
                         on:click=move |_| {
                             set_friend_id.set(id);
-                            set_show_chat.set(true);
                         }
                     >
                         {friend.name}
@@ -191,52 +189,45 @@ pub fn MainPage() -> impl IntoView {
             <div id="friends-container" class="flex-col flex-grow p-10 bg-white auto-y">
                 <span class="bold">"🔽 Friends"</span>
                 <ul id="online-list">
-                    {move || {
-                        let friends_data = friends.get();
-                        friends_data
-                            .0
-                            .iter()
-                            .enumerate()
-                            .map(|(i, f)| {
-                                let f = f.clone();
-                                view! {
-                                    <A href=move|| format!("/chat/{id}", id=i) >
-                                        <Friend
-                                            availability=signal(f.availability).0
-                                            name=signal(f.name).0
-                                            status=signal(f.status).0
-                                            open_chat=open_new_chat
-                                            order=Some(i)
-                                        />
+                    <For each=move || {online_friends().clone().into_iter().enumerate().collect::<Vec<_>>() }
+                        key=|f| f.0
+                        children=move |(id, friend)| {
+                            let friend = friend.clone();
+                            view! {
+                                <li>
+                                <A href=move|| format!("/chat/{id}", id=id) >
+                                    <Friend
+                                        availability=signal(friend.availability).0
+                                        name=signal(friend.name).0
+                                        status=signal(friend.status).0
+                                        open_chat=open_new_chat
+                                        order=None
+                                    />
                                     </A>
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    }}
+                                </li>
+                            }
+                        }
+                    />
                 </ul>
                 <span class="mt-1 bold">"🔽 Offline"</span>
                 <ul id="offline-list">
-                    {move || {
-                        let friends_data = friends.get();
-                        friends_data
-                            .1
-                            .iter()
-                            .map(|f| {
-                                let f = f.clone();
-                                view! {
-                                    <li>
-                                        <Friend
-                                            availability=signal(f.availability).0
-                                            name=signal(f.name).0
-                                            status=signal(f.status).0
-                                            open_chat=open_new_chat
-                                            order=None
-                                        />
-                                    </li>
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    }}
+                <For each=move || {offline_friends().clone().into_iter().enumerate().collect::<Vec<_>>() }
+                key=|f| f.0
+                children=move |(_,friend)| {
+                        let friend = friend.clone();
+                        view! {
+                            <li>
+                                <Friend
+                                    availability=signal(friend.availability).0
+                                    name=signal(friend.name).0
+                                    status=signal(friend.status).0
+                                    open_chat=open_new_chat
+                                    order=None
+                                />
+                                </li>
+                            }
+                        }
+                />
                 </ul>
             </div>
         </div>
