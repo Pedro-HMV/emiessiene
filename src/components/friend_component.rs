@@ -6,8 +6,6 @@ pub fn Friend(
     availability: ReadSignal<Availability>,
     name: ReadSignal<String>,
     status: ReadSignal<String>,
-    open_chat: impl Fn(usize) + 'static,
-    order: Option<usize>,
 ) -> impl IntoView {
     let format_status = move || {
         if !status.get().is_empty() {

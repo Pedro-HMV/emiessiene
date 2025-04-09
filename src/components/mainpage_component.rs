@@ -13,8 +13,6 @@ use models::{Availability, Friend, UpdateUsernameArgs, User};
 
 #[component]
 pub fn MainPage() -> impl IntoView {
-    let (friend_id, set_friend_id) = signal(0);
-    let (open_chats, set_open_chats) = signal(Vec::new());
     let (editing_user, set_editing_user) = signal(false);
     let (user, set_user) = signal(User {
         name: "Username".to_string(),
@@ -22,36 +20,15 @@ pub fn MainPage() -> impl IntoView {
         status: "Status message".to_string(),
         availability: Availability::Online,
     });
-    let (friends, set_friends) = signal((Vec::new(), Vec::new()));
+
+    let friends =
+        use_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No friends context");
+
+    let open_chats =
+        move || use_context::<ReadSignal<Vec<usize>>>().expect("No open chats context");
 
     let online_friends = move || friends.get().0;
     let offline_friends = move || friends.get().1;
-
-    let user_resource = LocalResource::new(|| async {
-        let info = invoke("get_user", JsValue::null()).await;
-        from_value::<User>(info).expect("Failed to parse user info")
-    });
-
-    let friends_resource = LocalResource::new(|| async {
-        let info = invoke("get_friends", JsValue::null()).await;
-        from_value::<(Vec<Friend>, Vec<Friend>)>(info).expect("Failed to parse friends info")
-    });
-
-    Effect::new(move |_| {
-        if let Some(updated_user) = user_resource.get() {
-            set_user.set((*updated_user).clone());
-        }
-        if let Some(updated_friends) = friends_resource.get() {
-            set_friends.set((*updated_friends).clone());
-        }
-    });
-
-    // Trigger initial loading
-    user_resource.refetch();
-    friends_resource.refetch();
-
-    provide_context(user);
-    provide_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>(friends);
 
     let update_username = {
         move |ev: FocusEvent| {
@@ -83,38 +60,18 @@ pub fn MainPage() -> impl IntoView {
         }
     };
 
-    let open_new_chat = move |id: usize| {
-        set_open_chats.update(|chats| {
-            if !chats.contains(&id) {
-                chats.push(id);
-            }
-        });
-        set_friend_id.set(id);
-    };
-
-    let close_chat = move |id: usize| {
-        set_open_chats.update(|chats| {
-            chats.retain(|&x| x != id);
-        });
-    };
-
     let chat_tabs = move || {
-        open_chats
+        open_chats()
             .get()
             .iter()
             .map(|&id| {
-                let friends_data = friends.get();
-                let friend = friends_data.0[id].clone();
+                let friend = online_friends()[id].clone();
                 view! {
-                    <button
-                        class="chat-tab"
-                        class:active=move || friend_id.get() == id
-                        on:click=move |_| {
-                            set_friend_id.set(id);
-                        }
-                    >
+                    <A href=move || {format!("/chat/{}", id)} >
+                    <button class="chat-tab">
                         {friend.name}
                     </button>
+                    </A>
                 }
             })
             .collect::<Vec<_>>()
@@ -200,8 +157,6 @@ pub fn MainPage() -> impl IntoView {
                                         availability=signal(friend.availability).0
                                         name=signal(friend.name).0
                                         status=signal(friend.status).0
-                                        open_chat=open_new_chat
-                                        order=None
                                     />
                                     </A>
                                 </li>
@@ -221,10 +176,8 @@ pub fn MainPage() -> impl IntoView {
                                     availability=signal(friend.availability).0
                                     name=signal(friend.name).0
                                     status=signal(friend.status).0
-                                    open_chat=open_new_chat
-                                    order=None
                                 />
-                                </li>
+                            </li>
                             }
                         }
                 />

@@ -23,6 +23,7 @@ pub fn App() -> impl IntoView {
         availability: Availability::Online,
     });
     let (friends, set_friends) = signal((Vec::<Friend>::new(), Vec::<Friend>::new()));
+    let (open_chats, set_open_chats) = signal(Vec::<usize>::new());
 
     let user_resource = LocalResource::new(|| async {
         let info = invoke("get_user", JsValue::null()).await;
@@ -45,6 +46,8 @@ pub fn App() -> impl IntoView {
 
     provide_context(user);
     provide_context(friends);
+    provide_context(open_chats);
+    provide_context(set_open_chats);
 
     view! {
         <Router>

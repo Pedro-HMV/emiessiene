@@ -1,6 +1,5 @@
 use leptos::ev::KeyboardEvent;
 use leptos::ev::SubmitEvent;
-use leptos::leptos_dom::logging::console_log;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::view;
@@ -28,12 +27,15 @@ pub fn Chat(// show: WriteSignal<bool>,
         set_msg.set(m);
     };
 
+    let set_open_chats =
+        move || use_context::<WriteSignal<Vec<usize>>>().expect("No set open chats context");
+
     let friends =
         use_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No friends context");
 
-    let params = use_params_map();
+    let params = move || use_params_map();
     let friend_id = move || {
-        params
+        params()
             .read()
             .get("id")
             .and_then(|id| id.parse::<usize>().ok())
@@ -70,7 +72,11 @@ pub fn Chat(// show: WriteSignal<bool>,
         });
     };
 
-    console_log(format!("Friends: {:?}", friends.get().0).as_str());
+    set_open_chats().update(|chats| {
+        if !chats.contains(&friend_id()) {
+            chats.push(friend_id());
+        }
+    });
 
     view! {
         <main class="container">
@@ -84,10 +90,10 @@ pub fn Chat(// show: WriteSignal<bool>,
                    "⬅️"
                     </button>
                     </A>
-                    <span class="chat_receiver">{format!("👤 {status}", status={friends.get().0[friend_id()].name.clone()})}</span>
+                    <span class="chat_receiver">{move || format!("👤 {status}", status={friends.get().0[friend_id()].name.clone()})}</span>
                     <span class="chat_receiver-status-message">
-                        {friends.get().0[friend_id()].status.clone()}
-                        <span class="ml-1">{format!("<{}>", friends.get().0[friend_id()].email.clone())}</span>
+                        {move || friends.get().0[friend_id()].status.clone()}
+                        <span class="ml-1">{move || format!("<{}>", friends.get().0[friend_id()].email.clone())}</span>
                     </span>
                     <A href="/main" >
                     <button
