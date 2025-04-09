@@ -48,6 +48,9 @@ pub fn MainPage() -> impl IntoView {
     user_resource.refetch();
     friends_resource.refetch();
 
+    provide_context(user);
+    provide_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>(friends);
+
     let update_username = {
         move |ev: FocusEvent| {
             ev.prevent_default();
@@ -101,7 +104,8 @@ pub fn MainPage() -> impl IntoView {
             .get()
             .iter()
             .map(|&id| {
-                let friend = &friends.get().0[id];
+                let friends_data = friends.get();
+                let friend = friends_data.0[id].clone();
                 view! {
                     <button
                         class="chat-tab"
@@ -111,7 +115,7 @@ pub fn MainPage() -> impl IntoView {
                             set_show_chat.set(true);
                         }
                     >
-                        {friend.name.clone()}
+                        {friend.name}
                     </button>
                 }
             })
@@ -188,22 +192,23 @@ pub fn MainPage() -> impl IntoView {
                 <span class="bold">"🔽 Friends"</span>
                 <ul id="online-list">
                     {move || {
-                        friends
-                            .get()
+                        let friends_data = friends.get();
+                        friends_data
                             .0
                             .iter()
                             .enumerate()
                             .map(|(i, f)| {
+                                let f = f.clone();
                                 view! {
-                                    <li>
+                                    <A href=move|| format!("/chat/{id}", id=i) >
                                         <Friend
-                                            availability=signal(f.availability.clone()).0
-                                            name=signal(f.name.to_string()).0
-                                            status=signal(f.status.to_string()).0
+                                            availability=signal(f.availability).0
+                                            name=signal(f.name).0
+                                            status=signal(f.status).0
                                             open_chat=open_new_chat
                                             order=Some(i)
                                         />
-                                    </li>
+                                    </A>
                                 }
                             })
                             .collect::<Vec<_>>()
@@ -212,17 +217,18 @@ pub fn MainPage() -> impl IntoView {
                 <span class="mt-1 bold">"🔽 Offline"</span>
                 <ul id="offline-list">
                     {move || {
-                        friends
-                            .get()
+                        let friends_data = friends.get();
+                        friends_data
                             .1
                             .iter()
                             .map(|f| {
+                                let f = f.clone();
                                 view! {
                                     <li>
                                         <Friend
-                                            availability=signal(f.availability.clone()).0
-                                            name=signal(f.name.to_string()).0
-                                            status=signal(f.status.to_string()).0
+                                            availability=signal(f.availability).0
+                                            name=signal(f.name).0
+                                            status=signal(f.status).0
                                             open_chat=open_new_chat
                                             order=None
                                         />

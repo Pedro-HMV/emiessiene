@@ -20,14 +20,7 @@ pub fn Friend(
     view! {
         <div id="friend_container" class="flex-row minline-20">
             <span>{move || availability.get().to_icon()}</span>
-            <a on:click=move |ev| {
-                ev.prevent_default();
-                if order.is_some() {
-                    open_chat(order.unwrap())
-                }
-            }>
                 <span class="bold">{move || name.get()}</span>
-            </a>
             <span class="ml-04">" " {move || format_status}</span>
         </div>
     }

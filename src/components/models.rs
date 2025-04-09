@@ -14,7 +14,7 @@ pub struct User {
     pub availability: Availability,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Friend {
     pub name: String,
     pub email: String,
@@ -22,7 +22,7 @@ pub struct Friend {
     pub availability: Availability,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum Availability {
     Online,
     Away,

@@ -1,30 +1,43 @@
 use leptos::ev::KeyboardEvent;
 use leptos::ev::SubmitEvent;
+use leptos::leptos_dom::logging::console_log;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::view;
 use leptos::web_sys;
+use leptos_router::components::A;
+use leptos_router::hooks::use_params_map;
 use wasm_bindgen::JsCast;
 
 use models::Friend;
-use models::User;
 
 use super::message_component::Message;
 use super::models;
 
 #[component]
-pub fn Chat(
-    show: WriteSignal<bool>,
-    user: ReadSignal<User>,
-    friends: ReadSignal<(Vec<Friend>, Vec<Friend>)>,
-    friend: ReadSignal<usize>,
-    close: impl Fn(usize) + 'static,
+pub fn Chat(// show: WriteSignal<bool>,
+    // user: ReadSignal<User>,
+    // friends: ReadSignal<(Vec<Friend>, Vec<Friend>)>,
+    // friend: ReadSignal<usize>,
+    // close: impl Fn(usize) + 'static,
 ) -> impl IntoView {
     let (msg, set_msg) = signal(String::new());
     let (message_list, set_message_list) = signal(Vec::new());
     let update_msg = move |ev| {
         let m = event_target_value(&ev);
         set_msg.set(m);
+    };
+
+    let friends =
+        use_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No friends context");
+
+    let params = use_params_map();
+    let friend_id = move || {
+        params
+            .read()
+            .get("id")
+            .and_then(|id| id.parse::<usize>().ok())
+            .unwrap_or(0)
     };
 
     let submit_on_enter = move |ev: KeyboardEvent| {
@@ -57,31 +70,32 @@ pub fn Chat(
         });
     };
 
+    console_log(format!("Friends: {:?}", friends.get().0).as_str());
+
     view! {
         <main class="container">
             <div class="chat_container">
                 <div class="chat_receiver-bar">
+
+                <A href="/main">
                     <button
                         class="back-button"
-                        on:click=move |_| {
-                            show.set(false);
-                        }
                     >
-                        "⬅️"
+                   "⬅️"
                     </button>
-                    <span class="chat_receiver">{format!("👤 {status}", status={friends.get().0[friend.get()].name.clone()})}</span>
+                    </A>
+                    <span class="chat_receiver">{format!("👤 {status}", status={friends.get().0[friend_id()].name.clone()})}</span>
                     <span class="chat_receiver-status-message">
-                        {friends.get().0[friend.get()].status.clone()}
-                        <span class="ml-1">{format!("<{}>", friends.get().0[friend.get()].email.clone())}</span>
+                        {friends.get().0[friend_id()].status.clone()}
+                        <span class="ml-1">{format!("<{}>", friends.get().0[friend_id()].email.clone())}</span>
                     </span>
+                    <A href="/main" >
                     <button
                         class="close-button"
-                        on:click=move |_| {
-                            close(friend.get());
-                        }
                     >
-                        "❌"
+                    "❌"
                     </button>
+                    </A>
                 </div>
                 <div class="chat_top-bar chat_icon-bar main_bordered">
                     <div class="chat_config-btn">"⚙️"</div>
@@ -101,7 +115,7 @@ pub fn Chat(
                                         .iter()
                                         .map(|m| {
                                             view! {
-                                                <Message user=user content=signal(m.clone()).0 />
+                                                <Message content=signal(m.clone()).0 />
                                             }
                                         })
                                         .collect::<Vec<_>>()
