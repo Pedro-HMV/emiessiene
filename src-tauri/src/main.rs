@@ -6,7 +6,7 @@ use std::{env, fmt::Display, fs::File, io::BufReader, sync::Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
 
-use log::{debug, info};
+use log::info;
 
 type App<'a> = State<'a, Mutex<AppState>>;
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command

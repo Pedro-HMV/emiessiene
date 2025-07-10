@@ -5,7 +5,7 @@ use leptos::task::spawn_local;
 use leptos::web_sys::HtmlInputElement;
 use leptos_router::components::A;
 use serde_wasm_bindgen::{from_value, to_value};
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 
 use super::friend_component::Friend;
 use super::models;
@@ -67,10 +67,8 @@ pub fn MainPage() -> impl IntoView {
             .map(|&id| {
                 let friend = online_friends()[id].clone();
                 view! {
-                    <A href=move || {format!("/chat/{}", id)} >
-                    <button class="chat-tab">
-                        {friend.name}
-                    </button>
+                    <A href=move || { format!("/chat/{}", id) }>
+                        <button class="chat-tab">{friend.name}</button>
                     </A>
                 }
             })
@@ -82,9 +80,7 @@ pub fn MainPage() -> impl IntoView {
 
     view! {
         <div id="main-container" class="flex-col">
-            <div class="chat-tabs">
-                {chat_tabs}
-            </div>
+            <div class="chat-tabs">{chat_tabs}</div>
             <header>
                 <div id="header_container" class="flex-row p-10 border-st">
                     <div id="header_left">
@@ -100,14 +96,18 @@ pub fn MainPage() -> impl IntoView {
                     <div id="header_right" class="ml-1">
                         <div id="header_info">
                             <div id="name">
-                                <Show   when=move || {editing_user.get()}
-                                        fallback=move || view! {
+                                <Show
+                                    when=move || { editing_user.get() }
+                                    fallback=move || {
+                                        view! {
                                             <span
                                                 on:click=move |_| set_editing_user.set(true)
                                                 class="bold"
                                             >
                                                 {move || user.get().name}
-                                            </span>}
+                                            </span>
+                                        }
+                                    }
                                 >
                                     <input
                                         on:blur=update_username
@@ -116,24 +116,21 @@ pub fn MainPage() -> impl IntoView {
                                         value=move || user.get().name
                                     />
                                 </Show>
-                                " (" {move || user.get().availability.to_string()} ")"
+                                " ("
+                                {move || user.get().availability.to_string()}
+                                ")"
                                 <span class="tabbed-down-arrow">"🔽"</span>
                             </div>
                             <div id="status-message">
                                 {move || user.get().status}
                                 <span class="tabbed-down-arrow">"🔽"</span>
                             </div>
-                            <A href="/">
-                                "Sign Out"
-                            </A>
+                            <A href="/">"Sign Out"</A>
                         </div>
                     </div>
                 </div>
             </header>
-            <div
-                id="find-friends"
-                class="mt-1 mb-1 bg-white border-1b pd-block-5 pd-inline-2"
-            >
+            <div id="find-friends" class="mt-1 mb-1 bg-white border-1b pd-block-5 pd-inline-2">
                 <span class="mr-1">"👤"</span>
                 <input
                     type="text"
@@ -146,18 +143,21 @@ pub fn MainPage() -> impl IntoView {
             <div id="friends-container" class="flex-col flex-grow p-10 bg-white auto-y">
                 <span class="bold">"🔽 Friends"</span>
                 <ul id="online-list">
-                    <For each=move || {online_friends().clone().into_iter().enumerate().collect::<Vec<_>>() }
+                    <For
+                        each=move || {
+                            online_friends().clone().into_iter().enumerate().collect::<Vec<_>>()
+                        }
                         key=|f| f.0
                         children=move |(id, friend)| {
                             let friend = friend.clone();
                             view! {
                                 <li>
-                                <A href=move|| format!("/chat/{id}", id=id) >
-                                    <Friend
-                                        availability=signal(friend.availability).0
-                                        name=signal(friend.name).0
-                                        status=signal(friend.status).0
-                                    />
+                                    <A href=move || format!("/chat/{id}", id = id)>
+                                        <Friend
+                                            availability=signal(friend.availability).0
+                                            name=signal(friend.name).0
+                                            status=signal(friend.status).0
+                                        />
                                     </A>
                                 </li>
                             }
@@ -166,21 +166,24 @@ pub fn MainPage() -> impl IntoView {
                 </ul>
                 <span class="mt-1 bold">"🔽 Offline"</span>
                 <ul id="offline-list">
-                <For each=move || {offline_friends().clone().into_iter().enumerate().collect::<Vec<_>>() }
-                key=|f| f.0
-                children=move |(_,friend)| {
-                        let friend = friend.clone();
-                        view! {
-                            <li>
-                                <Friend
-                                    availability=signal(friend.availability).0
-                                    name=signal(friend.name).0
-                                    status=signal(friend.status).0
-                                />
-                            </li>
+                    <For
+                        each=move || {
+                            offline_friends().clone().into_iter().enumerate().collect::<Vec<_>>()
+                        }
+                        key=|f| f.0
+                        children=move |(_, friend)| {
+                            let friend = friend.clone();
+                            view! {
+                                <li>
+                                    <Friend
+                                        availability=signal(friend.availability).0
+                                        name=signal(friend.name).0
+                                        status=signal(friend.status).0
+                                    />
+                                </li>
                             }
                         }
-                />
+                    />
                 </ul>
             </div>
         </div>
