@@ -37,10 +37,10 @@ pub fn App() -> impl IntoView {
 
     Effect::new(move |_| {
         if let Some(updated_user) = user_resource.get() {
-            set_user.set((*updated_user).clone());
+            set_user.set(updated_user);
         }
         if let Some(updated_friends) = friends_resource.get() {
-            set_friends.set((*updated_friends).clone());
+            set_friends.set(updated_friends);
         }
     });
 
@@ -51,7 +51,7 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Router>
-            <Routes fallback=move || view!{ "404 Not Found" }>
+            <Routes fallback=move || view! { "404 Not Found" }>
                 <Route path=path!("/") view=LoginPage />
                 <Route path=path!("/main") view=MainPage />
                 <Route path=path!("/chat/:id") view=Chat />
