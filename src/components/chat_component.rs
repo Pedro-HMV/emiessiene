@@ -191,14 +191,14 @@ pub fn Chat(// show: WriteSignal<bool>,
                     <div class="flex-col right-column">
                         <div class="flex-col top-user user-block">
                             <div class="top-avatar avatar"></div>
-                            <div class="flex-row justify-between below-avatar">
+                            <div class="below-avatar">
                                 <div class="webcam-icon">"🎦"</div>
                                 <div class="options-arrow">"🔽"</div>
                             </div>
                         </div>
                         <div class="flex-col bottom-user user-block">
                             <div class="bottom-avatar avatar"></div>
-                            <div class="flex-row justify-between below-avatar">
+                            <div class="below-avatar">
                                 <div class="webcam-icon">"🎦"</div>
                                 <div class="options-arrow">"🔽"</div>
                             </div>

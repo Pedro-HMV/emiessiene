@@ -6,6 +6,7 @@ body {
   margin: 16px;
   overflow: hidden;
   height: 100vh;
+  min-width: 320px; /* Minimum mobile width */
 }
 
 :root {
@@ -186,6 +187,9 @@ ul {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  min-width: 320px; /* Prevent breaking on very small screens */
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 div {
@@ -240,33 +244,135 @@ button {
 }
 
 .chat-and-avatars {
+  display: flex;
   justify-content: space-between;
-  padding-inline: 10px;
+  gap: 20px; /* Consistent gap between columns */
+  padding: 0 20px; /* Equal padding on both sides */
+  box-sizing: border-box;
 }
 
 .left-column {
-  min-width: 75vw;
+  flex: 1;
+  min-width: 0; /* Allow shrinking */
+  max-width: calc(100% - 240px); /* Reserve space for right column + gap */
 }
 
 .right-column {
-  max-width: 25vw;
+  flex: 0 0 220px; /* Reduced from 260px to better match avatar max-width */
+  display: flex;
+  flex-direction: column;
   justify-content: space-between;
 }
 
+/* Update avatar sizing for responsiveness */
 .avatar {
-  width: 20vw;
-  height: 20vw;
+  height: 0;
+  padding-bottom: calc(100% - 10px); /* Square aspect ratio */
   background-color: #0f0f0f;
+  max-width: 200px; /* Prevent excessive growth */
+  max-height: 200px;
+}
+
+/* Responsive breakpoints */
+@media (max-width: 1312px) {
+  .chat-and-avatars {
+    gap: 15px;
+    padding: 0 15px;
+  }
+  
+  .left-column {
+    max-width: calc(100% - 230px);
+  }
+  
+  .right-column {
+    flex: 0 0 210px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .chat-and-avatars {
+    gap: 10px;
+    padding: 0 10px;
+  }
+  
+  .left-column {
+    max-width: calc(100% - 180px);
+  }
+  
+  .right-column {
+    flex: 0 0 160px;
+  }
+}
+
+@media (max-width: 768px) {
+  .chat-and-avatars {
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 10px;
+  }
+  
+  .left-column {
+    max-width: 100%;
+  }
+  
+  .right-column {
+    flex: 0 0 auto;
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 10px;
+  }
+  
+  .user-block {
+    flex: 1;
+    max-width: 140px; /* Reduced from 200px for mobile */
+    width: auto; /* Override width: 100% for mobile */
+  }
+  
+  .avatar {
+    width: 120px;
+    height: 120px;
+    padding-bottom: 0; /* Reset padding-bottom for fixed size */
+  }
 }
 
 .user-block {
   border: 2px solid #bbb;
   padding: 5px;
+  width: 100%; /* Take full width of right-column */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 480px) {
+  .user-block {
+    max-width: 130px; /* Even smaller for very small screens */
+    min-width: 130px; /* Force consistent size */
+  }
+  
+  .avatar {
+    width: 120px;
+    height: 120px;
+  }
 }
 
 .below-avatar {
-  padding-top: 5px;
   align-items: center;
+  height: 30px; /* Fixed height for consistent button placement */
+  display: flex;
+  justify-content: space-between;
+}
+
+.webcam-icon,
+.options-arrow {
+  font-size: 16px; /* Fixed size for buttons */
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0; /* Prevent buttons from shrinking */
 }
 
 .justify-between {
@@ -274,7 +380,7 @@ button {
 }
 
 .chat_top-bar {
-  margin-inline: 0px;
+  margin: 0 20px; /* Match the padding of chat-and-avatars */
 }
 
 .chat_receiver-bar {
@@ -282,10 +388,34 @@ button {
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  padding: 8px;
+  padding: 8px 0px;
+  margin: 0 20px; /* Match the padding of chat-and-avatars */
   background: #f0f8ff;
   border-bottom: 1px solid #c8ded9;
   min-height: 60px;
+  margin-bottom: 0;
+}
+
+/* Responsive alignment for header bars */
+@media (max-width: 1312px) {
+  .chat_top-bar,
+  .chat_receiver-bar {
+    margin: 0 15px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .chat_top-bar,
+  .chat_receiver-bar {
+    margin: 0 10px;
+  }
+}
+
+@media (max-width: 768px) {
+  .chat_top-bar,
+  .chat_receiver-bar {
+    margin: 0 10px;
+  }
 }
 
 .chat-header-left,
@@ -293,6 +423,14 @@ button {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+}
+
+.chat-header-left {
+  margin-left: 8px;
+}
+
+.chat-header-right {
+  margin-right: 8px;
 }
 
 .chat-header-center {
@@ -469,6 +607,59 @@ button {
   overflow-y: auto;
 }
 
+/* Responsive design for message area */
+@media (max-width: 768px) {
+  .chat_message-list {
+    min-height: 300px;
+    height: calc(70vh - 150px);
+    max-height: 400px;
+  }
+  
+  .chat_message-form textarea {
+    height: 60px;
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+  
+  .chat_icon-bar {
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  
+  .chat_icon-bar > div {
+    min-width: 30px;
+    text-align: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .chat_message-list {
+    min-height: 250px;
+    height: calc(65vh - 120px);
+    max-height: 300px;
+  }
+  
+  .chat_message-form {
+    gap: 6px;
+    padding: 6px;
+  }
+  
+  .chat_message-form textarea {
+    height: 50px;
+    padding: 6px;
+    font-size: 16px;
+  }
+  
+  .chat_message-form button[type="submit"] {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+  
+  /* Hide some less essential icon buttons on very small screens */
+  .chat_icon-bar > div:nth-child(n+5) {
+    display: none;
+  }
+}
+
 .message_content {
   padding-left: 1rem;
 }
@@ -538,4 +729,37 @@ button {
 
 .chat-tab-close:hover {
   background: #ffeeee;
+}
+
+/* Responsive button area adjustments */
+@media (max-width: 1312px) {
+  .below-avatar {
+    height: 30px; /* Keep consistent height */
+  }
+}
+
+@media (max-width: 1024px) {
+  .below-avatar {
+    height: 30px; /* Keep consistent height */
+  }
+  
+  .webcam-icon,
+  .options-arrow {
+    width: 20px;
+    height: 20px;
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 768px) {
+  .below-avatar {
+    height: 30px; /* Consistent height for horizontal layout */
+  }
+  
+  .webcam-icon,
+  .options-arrow {
+    width: 24px;
+    height: 24px;
+    font-size: 16px;
+  }
 }
