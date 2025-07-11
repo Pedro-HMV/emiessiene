@@ -9,17 +9,15 @@ use wasm_bindgen::JsCast;
 
 use super::friend_component::Friend;
 use super::models;
-use models::{Availability, Friend, UpdateUsernameArgs, User};
+use models::{Friend, UpdateUsernameArgs, User};
 
 #[component]
 pub fn MainPage() -> impl IntoView {
     let (editing_user, set_editing_user) = signal(false);
-    let (user, set_user) = signal(User {
-        name: "Username".to_string(),
-        email: "user@hotmail.com".to_string(),
-        status: "Status message".to_string(),
-        availability: Availability::Online,
-    });
+
+    // Use the global user context instead of creating a local one
+    let user = use_context::<ReadSignal<User>>().expect("No user context");
+    let set_user = use_context::<WriteSignal<User>>().expect("No user setter context");
 
     let friends =
         use_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No friends context");
@@ -27,8 +25,18 @@ pub fn MainPage() -> impl IntoView {
     let open_chats =
         move || use_context::<ReadSignal<Vec<usize>>>().expect("No open chats context");
 
+    let set_open_chats =
+        use_context::<WriteSignal<Vec<usize>>>().expect("No set open chats context");
+
     let online_friends = move || friends.get().0;
     let offline_friends = move || friends.get().1;
+
+    // Function to close a chat tab
+    let close_chat = move |chat_id: usize| {
+        set_open_chats.update(|chats| {
+            chats.retain(|&id| id != chat_id);
+        });
+    };
 
     let update_username = {
         move |ev: FocusEvent| {
@@ -66,17 +74,20 @@ pub fn MainPage() -> impl IntoView {
             .iter()
             .map(|&id| {
                 let friend = online_friends()[id].clone();
+                let close_chat = close_chat.clone();
                 view! {
-                    <A href=move || { format!("/chat/{}", id) }>
-                        <button class="chat-tab">{friend.name}</button>
-                    </A>
+                    <div class="chat-tab-container">
+                        <A href=move || { format!("/chat/{}", id) }>
+                            <button class="chat-tab">{friend.name}</button>
+                        </A>
+                        <button class="chat-tab-close" on:click=move |_| close_chat(id)>
+                            "❌"
+                        </button>
+                    </div>
                 }
             })
             .collect::<Vec<_>>()
     };
-
-    let user = user.clone();
-    let set_editing_user = set_editing_user.clone();
 
     view! {
         <div id="main-container" class="flex-col">

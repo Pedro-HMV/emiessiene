@@ -45,6 +45,7 @@ pub fn App() -> impl IntoView {
     });
 
     provide_context(user);
+    provide_context(set_user);
     provide_context(friends);
     provide_context(open_chats);
     provide_context(set_open_chats);

@@ -1,13 +1,17 @@
-use super::models::Availability;
+use super::models::{Availability, User};
 use leptos::prelude::*;
 use leptos_router::hooks::use_navigate;
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
+    let (username, set_username) = signal(String::new());
     let (_, set_availability) = signal(Availability::Online);
     let (remember_me, set_remember_me) = signal(false);
     let (auto_sign_in, set_auto_sign_in) = signal(false);
     let navigate = use_navigate();
+
+    // Get the global user setter from context
+    let set_user = use_context::<WriteSignal<User>>().expect("No user setter context");
 
     let update_availability = move |ev| {
         let value = event_target_value(&ev);
@@ -21,6 +25,14 @@ pub fn LoginPage() -> impl IntoView {
 
     let sign_in = move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
+
+        // Update the global user context with the entered username
+        if !username.get().trim().is_empty() {
+            set_user.update(|user| {
+                user.name = username.get().trim().to_string();
+            });
+        }
+
         navigate("/main", Default::default());
     };
 
@@ -33,7 +45,13 @@ pub fn LoginPage() -> impl IntoView {
                 </div>
             </div>
             <form id="login_form" class="flex-col">
-                <input type="text" id="login_username" placeholder="Username" />
+                <input
+                    type="text"
+                    id="login_username"
+                    placeholder="Username"
+                    prop:value=username
+                    on:input=move |ev| set_username.set(event_target_value(&ev))
+                />
                 <input type="password" id="login_password" placeholder="Password" />
                 <div>
                     "Status: "<select id="login_availability" on:change=update_availability>
