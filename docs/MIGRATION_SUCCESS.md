@@ -1,7 +1,7 @@
 # 🎉 Leptos 0.8 Migration - SUCCESS!
 
 ## Summary
-The EmiEssiene project has been **successfully migrated** from Leptos 0.7.8 to **Leptos 0.8.2**!
+The NTO project has been **successfully migrated** from Leptos 0.7.8 to **Leptos 0.8.2**!
 
 ## What Was Done
 

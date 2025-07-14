@@ -1,6 +1,6 @@
 # Testing Guide
 
-This directory contains test scripts, utilities, and documentation for testing the EmiEssiEne application.
+This directory contains test scripts, utilities, and documentation for testing the NTO application.
 
 ## Test Categories
 

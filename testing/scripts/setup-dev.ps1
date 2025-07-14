@@ -1,11 +1,11 @@
 # Development Environment Setup Script
-# This script sets up the development environment for EmiEssiEne
+# This script sets up the development environment for NTO
 
 param(
     [switch]$Force
 )
 
-Write-Host "🔧 Setting up EmiEssiEne Development Environment" -ForegroundColor Green
+Write-Host "🔧 Setting up NTO Development Environment" -ForegroundColor Green
 
 $ErrorActionPreference = "Stop"
 

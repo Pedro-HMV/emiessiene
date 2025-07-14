@@ -6,7 +6,7 @@ param(
     [switch]$SkipTests
 )
 
-Write-Host "🚀 Starting EmiEssiEne Build and Test Process" -ForegroundColor Green
+Write-Host "🚀 Starting NTO Build and Test Process" -ForegroundColor Green
 
 # Set error action
 $ErrorActionPreference = "Stop"

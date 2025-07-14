@@ -1,6 +1,6 @@
 # Development Guide
 
-This guide provides detailed instructions for developing the EmiEssiEne project.
+This guide provides detailed instructions for developing the NTO project.
 
 ## 📋 Prerequisites
 
@@ -93,7 +93,7 @@ src-tauri/
 1. **Clone and Setup**
    ```powershell
    git clone <repository-url>
-   cd emiessiene
+   cd nto
    
    # Build dependencies
    cargo build

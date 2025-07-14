@@ -1,4 +1,4 @@
-# EmiEssiene - Comprehensive Development Guide
+# NTO - Comprehensive Development Guide
 
 ## Table of Contents
 1. [Project Overview](#project-overview)
@@ -18,7 +18,7 @@
 
 ## Project Overview
 
-EmiEssiene is a desktop application that recreates the classic MSN Messenger experience, built with modern web technologies. The project uses Tauri for the desktop application framework and Leptos for the reactive web UI framework.
+NTO is a desktop application that recreates the classic MSN Messenger experience, built with modern web technologies. The project uses Tauri for the desktop application framework and Leptos for the reactive web UI framework.
 
 ### Key Features
 - **Classic MSN Messenger UI** - Authentic recreation of the classic MSN Messenger interface
@@ -89,8 +89,8 @@ EmiEssiene is a desktop application that recreates the classic MSN Messenger exp
 
 5. **Clone Repository**
    ```powershell
-   git clone https://github.com/Pedro-HMV/emiessiene.git
-   cd emiessiene
+   git clone https://github.com/Pedro-HMV/nto.git
+   cd nto
    ```
 
 ### IDE Setup
@@ -102,7 +102,7 @@ EmiEssiene is a desktop application that recreates the classic MSN Messenger exp
 ## Project Structure
 
 ```
-emiessiene/
+nto/
 ├── docs/                           # All documentation
 │   ├── API.md                     # API documentation
 │   ├── DEVELOPMENT.md             # Development guide
@@ -503,7 +503,7 @@ rustflags = ["--cfg=erase_components"]
 
 ## Conclusion
 
-This guide provides a comprehensive overview of the EmiEssiene project for developers. The project aims to recreate the classic MSN Messenger experience using modern web technologies, with a focus on maintainability, performance, and user experience.
+This guide provides a comprehensive overview of the NTO project for developers. The project aims to recreate the classic MSN Messenger experience using modern web technologies, with a focus on maintainability, performance, and user experience.
 
 For specific implementation details, refer to the source code and individual component documentation. For issues and questions, check the troubleshooting guide or create an issue in the repository.
 

@@ -1,8 +1,8 @@
-# EmiEssiEne Project Analysis - January 2025
+# NTO Project Analysis - January 2025
 
 ## Executive Summary
 
-I've completed a comprehensive analysis of the EmiEssiEne project. The project is a Rust-based desktop application recreating the classic MSN Messenger experience using Tauri (backend) and Leptos (frontend). The codebase is currently in a working state but requires a migration to Leptos 0.8 for improved performance and new features.
+I've completed a comprehensive analysis of the NTO project. The project is a Rust-based desktop application recreating the classic MSN Messenger experience using Tauri (backend) and Leptos (frontend). The codebase is currently in a working state but requires a migration to Leptos 0.8 for improved performance and new features.
 
 ## Current Project Status
 
@@ -123,7 +123,7 @@ Frontend (Leptos):
 
 ## Conclusion
 
-The EmiEssiEne project is well-architected and in a good state for continued development. The primary focus should be the Leptos 0.8 migration, which will unlock significant performance improvements and new features. The project structure and documentation are excellent foundations for ongoing development.
+The NTO project is well-architected and in a good state for continued development. The primary focus should be the Leptos 0.8 migration, which will unlock significant performance improvements and new features. The project structure and documentation are excellent foundations for ongoing development.
 
 The development team has done an excellent job creating a maintainable codebase with clear separation of concerns and good documentation practices. With the Leptos 0.8 migration completed, this project will be well-positioned for future enhancements and growth.
 

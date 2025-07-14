@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-This guide helps resolve common issues when developing or running the EmiEssiEne application.
+This guide helps resolve common issues when developing or running the NTO application.
 
 ## 🔧 Build Issues
 
@@ -236,7 +236,7 @@ cargo outdated
 ### Performance Monitoring
 ```powershell
 # Check memory usage
-Get-Process | Where-Object {$_.ProcessName -like "*emiessiene*"}
+Get-Process | Where-Object {$_.ProcessName -like "*nto*"}
 
 # Monitor file changes
 Get-ChildItem -Path . -Recurse | Where-Object {$_.LastWriteTime -gt (Get-Date).AddMinutes(-5)}

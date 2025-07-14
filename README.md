@@ -1,4 +1,4 @@
-# EmiEssiEne - MSN Messenger Clone
+# NTO - MSN Messenger Clone
 
 A modern recreation of the classic MSN Messenger instant messaging client, built with Rust, Tauri, and Leptos.
 
@@ -8,7 +8,7 @@ A modern recreation of the classic MSN Messenger instant messaging client, built
 
 ## 🎯 Project Overview
 
-**EmiEssiEne** is a desktop application that recreates the nostalgic MSN Messenger experience with modern technology. The name is a playful Portuguese reference to "MSN" that captures the spirit of the original application.
+**NTO** is a desktop application that recreates the nostalgic MSN Messenger experience with modern technology. The name is a playful reference to "MSN" that captures the spirit of the original application.
 
 ### ✨ Features
 
@@ -32,7 +32,7 @@ A modern recreation of the classic MSN Messenger instant messaging client, built
 ```powershell
 # Clone the repository
 git clone [repository-url]
-cd emiessiene
+cd nto
 
 # Start development server
 cargo tauri dev
@@ -64,7 +64,7 @@ cargo tauri build
 ### Project Structure
 
 ```
-emiessiene/
+nto/
 ├── docs/                    # 📚 Documentation
 ├── testing/                 # 🧪 Test scripts and utilities
 ├── src/                     # 🎨 Frontend (Leptos)
@@ -174,4 +174,4 @@ See [Copilot Instructions](./.github/copilot-instructions.md) for detailed devel
 
 ---
 
-**EmiEssiEne** - Bringing back the golden age of instant messaging! 🌟
+**NTO** - Bringing back the golden age of instant messaging! 🌟

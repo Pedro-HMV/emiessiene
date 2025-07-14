@@ -38,7 +38,7 @@ pub fn LoginPage() -> impl IntoView {
 
     view! {
         <div id="login_container" class="flex-col">
-            <div id="login_title">"EmiEssiEne"</div>
+            <div id="login_title">"NTO"</div>
             <div id="login_avatar">
                 <div id="login_avatar_img" style="width: 150px; height: 150px; background: black;">
                     a

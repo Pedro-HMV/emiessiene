@@ -7,7 +7,7 @@
     "withGlobalTauri": true
   },
   "package": {
-    "productName": "emiessiene",
+    "productName": "nto",
     "version": "0.1.0"
   },
   "tauri": {
@@ -20,7 +20,7 @@
     },
     "windows": [
       {
-        "title": "EmiEssiEne - alpha version",
+        "title": "NTO - alpha version",
         "fullscreen": false,
         "width": 1080,
         "height": 720
@@ -32,7 +32,7 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.emiessiene.app",
+      "identifier": "com.nto.app",
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",

@@ -1,4 +1,4 @@
-# GitHub Copilot Instructions for EmiEssiEne Project
+# GitHub Copilot Instructions for NTO Project
 
 ## Project Overview
 This is a Rust-based desktop application that recreates the classic MSN Messenger experience using Tauri (backend) and Leptos (frontend). The project follows a specific structure and development practices.
@@ -23,7 +23,7 @@ This is a Rust-based desktop application that recreates the classic MSN Messenge
 
 ### Directory Structure
 ```
-emiessiene/
+nto/
 ├── docs/                    # All documentation
 ├── testing/                 # Test scripts and utilities
 ├── src/                     # Frontend Leptos code

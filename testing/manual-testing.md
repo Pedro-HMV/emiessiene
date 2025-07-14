@@ -1,6 +1,6 @@
 # Manual Testing Checklist
 
-This document provides a comprehensive checklist for manually testing the EmiEssiEne application.
+This document provides a comprehensive checklist for manually testing the NTO application.
 
 ## Pre-Testing Setup
 

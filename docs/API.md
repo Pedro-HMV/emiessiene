@@ -495,7 +495,7 @@ mod tests {
 
 ## Version Compatibility
 
-This API documentation is for version 0.1.0 of the EmiEssiEne application.
+This API documentation is for version 0.1.0 of the NTO application.
 
 Future versions may include:
 - Additional user profile fields
