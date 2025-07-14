@@ -234,10 +234,13 @@ sudo mkdir -p /etc/prosody/certs
 # Generate self-signed certificate for development
 sudo openssl req -x509 -newkey rsa:4096 -keyout /etc/prosody/certs/nto.local.key -out /etc/prosody/certs/nto.local.crt -days 365 -nodes -subj "/CN=nto.local"
 
-# Set proper permissions
+# Verify certificates were created
+ls -la /etc/prosody/certs/
+
+# Set proper ownership and permissions
 sudo chown -R prosody:prosody /etc/prosody/certs
-sudo chmod 600 /etc/prosody/certs/*.key
-sudo chmod 644 /etc/prosody/certs/*.crt
+sudo chmod 600 /etc/prosody/certs/nto.local.key
+sudo chmod 644 /etc/prosody/certs/nto.local.crt
 ```
 
 ### Create Admin User

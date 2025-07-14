@@ -8,6 +8,9 @@ use tauri::{command, State};
 
 use log::info;
 
+mod xmpp_manager;
+use xmpp_manager::XmppManager;
+
 type App<'a> = State<'a, Mutex<AppState>>;
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 
@@ -78,7 +81,7 @@ struct FriendJson {
     availability: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Availability {
     Online,
     Away,
@@ -91,6 +94,9 @@ struct AppState {
     user: User,
     friends: Vec<Friend>,
 }
+
+// Separate state for XMPP manager since it contains non-serializable types
+type XmppState = std::sync::Arc<tokio::sync::Mutex<XmppManager>>;
 
 impl AppState {
     fn friends_by_availability(&self) -> (Vec<Friend>, Vec<Friend>) {
@@ -175,19 +181,33 @@ fn main() {
     env_logger::init();
     info!("Starting application");
     info!(
-        "Currect directory: {}",
+        "Current directory: {}",
         env::current_dir().unwrap().display()
     );
     let app = init_state();
     info!("App state: {}", app);
+
+    // Initialize XMPP manager
+    let xmpp_manager = XmppManager::new();
+    let xmpp_state = std::sync::Arc::new(tokio::sync::Mutex::new(xmpp_manager));
+
     tauri::Builder::default()
         .manage(Mutex::new(app))
+        .manage(xmpp_state)
+        .setup(|_app| Ok(()))
         .invoke_handler(tauri::generate_handler![
             get_user,
             get_friends,
             update_friend,
             add_friend,
             update_username,
+            // XMPP commands
+            xmpp_connect,
+            xmpp_disconnect,
+            xmpp_send_message,
+            xmpp_set_presence,
+            xmpp_add_contact,
+            xmpp_get_connection_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -248,4 +268,74 @@ fn add_friend(
     let friend = Friend::new(name, email, status, availability);
     app.friends.push(friend.clone());
     Ok(friend)
+}
+
+// XMPP Commands
+
+#[command]
+async fn xmpp_connect(
+    app_handle: tauri::AppHandle,
+    xmpp_state: State<'_, XmppState>,
+    jid: String,
+    password: String,
+) -> Result<String, String> {
+    info!("XMPP connect command called for JID: {}", jid);
+    let mut xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.set_app_handle(app_handle);
+    xmpp_manager.connect(jid, password).await?;
+    Ok("Connected successfully".to_string())
+}
+
+#[command]
+async fn xmpp_disconnect(xmpp_state: State<'_, XmppState>) -> Result<String, String> {
+    info!("XMPP disconnect command called");
+    let mut xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.disconnect().await?;
+    Ok("Disconnected successfully".to_string())
+}
+
+#[command]
+async fn xmpp_send_message(
+    xmpp_state: State<'_, XmppState>,
+    to_jid: String,
+    body: String,
+) -> Result<String, String> {
+    info!("XMPP send message command called");
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.send_message(to_jid, body).await?;
+    Ok("Message sent successfully".to_string())
+}
+
+#[command]
+async fn xmpp_set_presence(
+    xmpp_state: State<'_, XmppState>,
+    availability: Availability,
+    status: Option<String>,
+) -> Result<String, String> {
+    info!("XMPP set presence command called");
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.set_presence(availability, status).await?;
+    Ok("Presence updated successfully".to_string())
+}
+
+#[command]
+async fn xmpp_add_contact(xmpp_state: State<'_, XmppState>, jid: String) -> Result<String, String> {
+    info!("XMPP add contact command called");
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.add_contact(jid).await?;
+    Ok("Contact addition request sent".to_string())
+}
+
+#[command]
+async fn xmpp_get_connection_status(
+    xmpp_state: State<'_, XmppState>,
+) -> Result<serde_json::Value, String> {
+    let xmpp_manager = xmpp_state.lock().await;
+    let connected = xmpp_manager.is_connected().await;
+    let jid = xmpp_manager.get_current_jid().await;
+
+    Ok(serde_json::json!({
+        "connected": connected,
+        "jid": jid
+    }))
 }
