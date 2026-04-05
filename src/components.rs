@@ -4,3 +4,4 @@ pub mod loginpage_component;
 pub mod mainpage_component;
 pub mod message_component;
 pub mod models;
+pub mod register_component;

@@ -6,6 +6,7 @@ use leptos::web_sys::HtmlInputElement;
 use leptos_router::components::A;
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use super::friend_component::Friend;
 use super::models;
@@ -14,6 +15,7 @@ use models::{Friend, UpdateUsernameArgs, User};
 #[component]
 pub fn MainPage() -> impl IntoView {
     let (editing_user, set_editing_user) = signal(false);
+    let (connection_status, set_connection_status) = signal("🔌 Checking connection...".to_string());
 
     // Use the global user context instead of creating a local one
     let user = use_context::<ReadSignal<User>>().expect("No user context");
@@ -27,6 +29,63 @@ pub fn MainPage() -> impl IntoView {
 
     let set_open_chats =
         use_context::<WriteSignal<Vec<usize>>>().expect("No set open chats context");
+
+    // Check XMPP connection status on page load
+    {
+        let set_connection_status = set_connection_status;
+        spawn_local(async move {
+            match invoke("xmpp_get_connection_status", to_value(&serde_json::json!({})).unwrap()).await {
+                result => {
+                    match from_value::<serde_json::Value>(result) {
+                        Ok(status) => {
+                            if status["connected"].as_bool().unwrap_or(false) {
+                                set_connection_status.set("🟢 Connected".to_string());
+                            } else {
+                                set_connection_status.set("� Disconnected".to_string());
+                            }
+                        }
+                        Err(_) => {
+                            set_connection_status.set("🔴 Disconnected".to_string());
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Set up XMPP event listeners
+    {
+        let set_connection_status = set_connection_status;
+        spawn_local(async move {
+            // Import Tauri's event listening capability
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
+                async fn listen(event: &str, callback: &js_sys::Function) -> JsValue;
+            }
+
+            // Listen for connection events
+            let connected_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
+                let set_connection_status = set_connection_status;
+                move |_event: JsValue| {
+                    set_connection_status.set("🟢 Connected".to_string());
+                }
+            }) as Box<dyn Fn(JsValue)>);
+
+            let disconnected_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
+                let set_connection_status = set_connection_status;
+                move |_event: JsValue| {
+                    set_connection_status.set("🔴 Disconnected".to_string());
+                }
+            }) as Box<dyn Fn(JsValue)>);
+
+            let _ = listen("xmpp_connected", connected_callback.as_ref().unchecked_ref()).await;
+            let _ = listen("xmpp_disconnected", disconnected_callback.as_ref().unchecked_ref()).await;
+            
+            connected_callback.forget();
+            disconnected_callback.forget();
+        });
+    }
 
     let online_friends = move || friends.get().0;
     let offline_friends = move || friends.get().1;
@@ -135,6 +194,20 @@ pub fn MainPage() -> impl IntoView {
                             <div id="status-message">
                                 {move || user.get().status}
                                 <span class="tabbed-down-arrow">"🔽"</span>
+                            </div>
+                            <div id="connection-status" class="mt-1">
+                                <span class="mr-1">
+                                    {move || {
+                                        if connection_status.get() == "Connected" {
+                                            "🟢"
+                                        } else {
+                                            "🔴"
+                                        }
+                                    }}
+                                </span>
+                                <span style="font-size: 12px; color: #666;">
+                                    {move || format!("XMPP: {}", connection_status.get())}
+                                </span>
                             </div>
                             <A href="/">"Sign Out"</A>
                         </div>

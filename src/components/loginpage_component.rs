@@ -1,17 +1,52 @@
 use super::models::{Availability, User};
 use leptos::prelude::*;
 use leptos_router::hooks::use_navigate;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::spawn_local;
+use serde_wasm_bindgen::{from_value, to_value};
+use crate::app::invoke;
+use serde::{Deserialize, Serialize};
+
+// Struct for XMPP connection arguments
+#[derive(Serialize, Deserialize)]
+struct XmppConnectArgs {
+    jid: String,
+    password: String,
+}
+
+// Struct for XMPP presence arguments  
+#[derive(Serialize, Deserialize)]
+struct XmppPresenceArgs {
+    availability: String,
+    status: String,
+}
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
     let (username, set_username) = signal(String::new());
-    let (_, set_availability) = signal(Availability::Online);
+    let (password, set_password) = signal(String::new());
+    let (availability, set_availability) = signal(Availability::Online);
     let (remember_me, set_remember_me) = signal(false);
     let (auto_sign_in, set_auto_sign_in) = signal(false);
+    let (is_loading, set_is_loading) = signal(false);
+    let (error_message, set_error_message) = signal(String::new());
     let navigate = use_navigate();
 
     // Get the global user setter from context
     let set_user = use_context::<WriteSignal<User>>().expect("No user setter context");
+
+    // Create a signal to trigger navigation
+    let (should_navigate, set_should_navigate) = signal(false);
+
+    // Create an effect that handles navigation
+    Effect::new({
+        let navigate = navigate.clone();
+        move |_| {
+            if should_navigate.get() {
+                navigate("/main", Default::default());
+            }
+        }
+    });
 
     let update_availability = move |ev| {
         let value = event_target_value(&ev);
@@ -23,17 +58,106 @@ pub fn LoginPage() -> impl IntoView {
         });
     };
 
-    let sign_in = move |ev: leptos::ev::MouseEvent| {
-        ev.prevent_default();
+    let handle_sign_in = {
+        let username = username;
+        let password = password;
+        let availability = availability;
+        let set_user = set_user;
+        let set_error_message = set_error_message;
+        let set_is_loading = set_is_loading;
+        let set_should_navigate = set_should_navigate;
 
-        // Update the global user context with the entered username
-        if !username.get().trim().is_empty() {
-            set_user.update(|user| {
-                user.name = username.get().trim().to_string();
+        move |ev: leptos::ev::MouseEvent| {
+            ev.prevent_default();
+
+            // Clear any previous error messages
+            set_error_message.set(String::new());
+
+            // Validate input
+            if username.get().trim().is_empty() {
+                set_error_message.set("Email is required".to_string());
+                return;
+            }
+
+            if password.get().trim().is_empty() {
+                set_error_message.set("Password is required".to_string());
+                return;
+            }
+
+            // Set loading state
+            set_is_loading.set(true);
+
+            // Clone values for the async block
+            let jid = if username.get().trim().contains('@') {
+                // If already an email, use as-is
+                username.get().trim().to_string()
+            } else {
+                // If just username, append domain
+                format!("{}@nto.local", username.get().trim())
+            };
+            let password_value = password.get().clone();
+            let availability_value = availability.get().clone();
+            let username_value = username.get().clone();
+
+            // Clone the signals for the async block
+            let set_user = set_user;
+            let set_error_message = set_error_message;
+            let set_is_loading = set_is_loading;
+            let set_should_navigate = set_should_navigate;
+
+            // Spawn async task for XMPP connection
+            spawn_local(async move {
+                // Create arguments for Tauri command using struct
+                let connect_args = XmppConnectArgs {
+                    jid: jid.clone(),
+                    password: password_value.clone(),
+                };
+
+                // Try XMPP connection
+                let result = invoke("xmpp_connect", to_value(&connect_args).unwrap()).await;
+
+                // Check if the result indicates success
+                match from_value::<serde_json::Value>(result) {
+                    Ok(response) => {
+                        if response["success"].as_bool().unwrap_or(false) {
+                            // XMPP connection successful
+                            log::info!("XMPP connection successful for {}", jid);
+
+                            // Update global user context
+                            set_user.update(|user| {
+                                user.name = username_value.trim().to_string();
+                                user.availability = availability_value.clone();
+                            });
+
+                            // Set presence after connection
+                            let presence_args = XmppPresenceArgs {
+                                availability: format!("{:?}", availability_value),
+                                status: "Online via NTO".to_string(),
+                            };
+
+                            let _presence_result = invoke("xmpp_set_presence", to_value(&presence_args).unwrap()).await;
+
+                            // Navigate to main page
+                            set_is_loading.set(false);
+                            set_should_navigate.set(true);
+                        } else {
+                            // XMPP connection failed
+                            let error_msg = response["error"].as_str().unwrap_or("Unknown error");
+                            log::error!("XMPP connection failed: {}", error_msg);
+                            set_error_message
+                                .set("Login failed. Please check your credentials.".to_string());
+                            set_is_loading.set(false);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to parse XMPP response: {:?}", e);
+                        set_error_message
+                            .set("Login failed. Connection error.".to_string());
+                        set_is_loading.set(false);
+                    }
+                }
             });
         }
-
-        navigate("/main", Default::default());
     };
 
     view! {
@@ -48,11 +172,37 @@ pub fn LoginPage() -> impl IntoView {
                 <input
                     type="text"
                     id="login_username"
-                    placeholder="Username"
+                    placeholder="Email (e.g., pedro@hotmail.com)"
                     prop:value=username
                     on:input=move |ev| set_username.set(event_target_value(&ev))
                 />
-                <input type="password" id="login_password" placeholder="Password" />
+                <input
+                    type="password"
+                    id="login_password"
+                    placeholder="Password"
+                    prop:value=password
+                    on:input=move |ev| set_password.set(event_target_value(&ev))
+                />
+
+                // Show error message if any
+                <div class="error-container" style="min-height: 20px; margin: 10px 0;">
+                    {move || {
+                        let error = error_message.get();
+                        let display_style = if error.is_empty() {
+                            "color: red; display: none;"
+                        } else {
+                            "color: red;"
+                        };
+                        let content = if error.is_empty() { String::new() } else { error };
+
+                        view! {
+                            <div class="error-message" style=display_style>
+                                {content}
+                            </div>
+                        }
+                    }}
+                </div>
+
                 <div>
                     "Status: "<select id="login_availability" on:change=update_availability>
                         <option value="Online">Online</option>
@@ -83,9 +233,14 @@ pub fn LoginPage() -> impl IntoView {
                         "Sign me in automatically"
                     </label>
                 </div>
-                <button type="button" on:click=sign_in>
-                    "Sign In"
+                <button type="button" on:click=handle_sign_in disabled=move || is_loading.get()>
+                    {move || if is_loading.get() { "Connecting..." } else { "Sign In" }}
                 </button>
+                
+                <div class="register-link" style="margin-top: 20px; text-align: center;">
+                    "Don't have an account? "
+                    <a href="/register" style="color: #0066cc; text-decoration: none;">"Create Account"</a>
+                </div>
             </form>
         </div>
     }

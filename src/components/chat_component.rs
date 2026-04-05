@@ -6,12 +6,18 @@ use leptos::view;
 use leptos::web_sys;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
+use serde::{Deserialize, Serialize};
+use serde_wasm_bindgen::{from_value, to_value};
+use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use models::Friend;
 
 use super::message_component::Message;
 use super::models;
+
+// Import the app's invoke function
+use crate::app::invoke;
 
 #[component]
 pub fn Chat(// show: WriteSignal<bool>,
@@ -70,16 +76,14 @@ pub fn Chat(// show: WriteSignal<bool>,
     };
 
     let submit_on_enter = move |ev: KeyboardEvent| {
-        spawn_local(async move {
-            if ev.key() == "Enter" && !ev.shift_key() {
-                ev.prevent_default();
-                if let Some(form) = document().get_element_by_id("message-form") {
-                    if let Some(element) = form.dyn_ref::<web_sys::HtmlFormElement>() {
-                        element.request_submit().unwrap();
-                    }
+        if ev.key() == "Enter" && !ev.shift_key() {
+            ev.prevent_default();
+            if let Some(form) = document().get_element_by_id("message-form") {
+                if let Some(element) = form.dyn_ref::<web_sys::HtmlFormElement>() {
+                    let _ = element.request_submit();
                 }
             }
-        })
+        }
     };
 
     let send_msg = move |ev: SubmitEvent| {
@@ -89,7 +93,43 @@ pub fn Chat(// show: WriteSignal<bool>,
             if msg.trim().is_empty() {
                 return;
             }
-            set_message_list.update(|msg_list| msg_list.push(msg.clone()));
+
+            // Get the friend's information for XMPP messaging
+            let friend_info = friends.get();
+            if friend_id() >= friend_info.0.len() {
+                log::error!("Invalid friend index: {}", friend_id());
+                return;
+            }
+
+            let friend = &friend_info.0[friend_id()];
+            let friend_jid = friend.email.clone(); // Using email as JID
+
+            // Send message via XMPP
+            let send_args = serde_json::json!({
+                "to_jid": friend_jid.clone(),
+                "body": msg.trim().to_string(),
+            });
+
+            match invoke("xmpp_send_message", to_value(&send_args).unwrap()).await {
+                result => {
+                    match from_value::<serde_json::Value>(result) {
+                        Ok(response) => {
+                            if response["success"].as_bool().unwrap_or(false) {
+                                log::info!("Message sent successfully via XMPP to {}", friend_jid);
+                                // Add message to local list only after successful send
+                                set_message_list.update(|msg_list| msg_list.push(msg.clone()));
+                            } else {
+                                log::error!("Failed to send XMPP message: {:?}", response);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to parse XMPP response: {:?}", e);
+                        }
+                    }
+                }
+            }
+
+            // Clear the input field
             set_msg.set(String::new());
             if let Some(input) = document().get_element_by_id("message-input") {
                 if let Some(input_element) = input.dyn_ref::<web_sys::HtmlTextAreaElement>() {
@@ -105,6 +145,44 @@ pub fn Chat(// show: WriteSignal<bool>,
             if !chats.contains(&static_friend_id) {
                 chats.push(static_friend_id);
             }
+        });
+    }
+
+    // Set up XMPP event listeners for incoming messages
+    {
+        let set_message_list = set_message_list;
+
+        spawn_local(async move {
+            // Import Tauri's event listening capability
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
+                async fn listen(event: &str, callback: &js_sys::Function) -> JsValue;
+            }
+
+            let callback = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: JsValue| {
+                // Parse the incoming message event
+                match from_value::<serde_json::Value>(event) {
+                    Ok(event_data) => {
+                        log::info!("Received XMPP event: {:?}", event_data);
+
+                        // For incoming messages, add them to the message list
+                        if let Some(from) = event_data["from"].as_str() {
+                            if let Some(body) = event_data["body"].as_str() {
+                                let incoming_message = format!("📥 {}: {}", from, body);
+                                set_message_list.update(|msg_list| msg_list.push(incoming_message));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to parse XMPP event: {:?}", e);
+                    }
+                }
+            })
+                as Box<dyn Fn(JsValue)>);
+
+            let _ = listen("xmpp_message_received", callback.as_ref().unchecked_ref()).await;
+            callback.forget(); // Keep the callback alive
         });
     }
 
@@ -182,7 +260,7 @@ pub fn Chat(// show: WriteSignal<bool>,
                                     id="message-input"
                                     placeholder="Enter a message..."
                                     on:input=update_msg
-                                    on:keypress=submit_on_enter
+                                    on:keydown=submit_on_enter
                                 ></textarea>
                                 <button type="submit">"Send"</button>
                             </form>

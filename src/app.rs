@@ -1,7 +1,7 @@
 use crate::components::models::{Availability, Friend, User};
 
 use super::components::mainpage_component::MainPage;
-use super::components::{chat_component::Chat, loginpage_component::LoginPage};
+use super::components::{chat_component::Chat, loginpage_component::LoginPage, register_component::RegisterPage};
 use leptos::prelude::*;
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
@@ -54,6 +54,7 @@ pub fn App() -> impl IntoView {
         <Router>
             <Routes fallback=move || view! { "404 Not Found" }>
                 <Route path=path!("/") view=LoginPage />
+                <Route path=path!("/register") view=RegisterPage />
                 <Route path=path!("/main") view=MainPage />
                 <Route path=path!("/chat/:id") view=Chat />
             </Routes>

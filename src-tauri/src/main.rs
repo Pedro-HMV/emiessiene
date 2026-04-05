@@ -6,7 +6,7 @@ use std::{env, fmt::Display, fs::File, io::BufReader, sync::Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
 
-use log::info;
+use log;
 
 mod xmpp_manager;
 use xmpp_manager::XmppManager;
@@ -45,7 +45,7 @@ impl Friend {
         status: Option<String>,
         availability: Option<Availability>,
     ) -> Self {
-        info!("Creating new friend: {} <{}>", name, email);
+        log::info!("Creating new friend: {} <{}>", name, email);
         Self {
             name,
             email,
@@ -60,7 +60,7 @@ impl Friend {
         status: Option<String>,
         availability: Option<Availability>,
     ) {
-        info!("Updating friend: {}", self.email);
+        log::info!("Updating friend: {}", self.email);
         if let Some(name) = name {
             self.name = name;
         }
@@ -100,7 +100,7 @@ type XmppState = std::sync::Arc<tokio::sync::Mutex<XmppManager>>;
 
 impl AppState {
     fn friends_by_availability(&self) -> (Vec<Friend>, Vec<Friend>) {
-        info!("Sorting friends by availability");
+        log::info!("Sorting friends by availability");
         let mut online_friends = Vec::new();
         let mut offline_friends = Vec::new();
         self.friends.iter().for_each(|f| match f.availability {
@@ -125,7 +125,7 @@ impl Display for AppState {
 }
 
 fn load_friends_list(file_path: &str) -> Result<Vec<Friend>, Box<dyn std::error::Error>> {
-    info!("Loading friends list from {}", file_path);
+    log::info!("Loading friends list from {}", file_path);
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
     let json: Vec<FriendJson> = serde_json::from_reader(reader)?;
@@ -145,12 +145,12 @@ fn load_friends_list(file_path: &str) -> Result<Vec<Friend>, Box<dyn std::error:
         })
         .collect();
 
-    info!("Loaded {} friends", friends.len());
+    log::info!("Loaded {} friends", friends.len());
     Ok(friends)
 }
 
 fn load_user(file_path: &str) -> Result<User, Box<dyn std::error::Error>> {
-    info!("Loading user from {}", file_path);
+    log::info!("Loading user from {}", file_path);
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
     let json: UserJson = serde_json::from_reader(reader)?;
@@ -166,12 +166,12 @@ fn load_user(file_path: &str) -> Result<User, Box<dyn std::error::Error>> {
             _ => Availability::Offline,
         },
     };
-    info!("Loaded user: {}", user.name);
+    log::info!("Loaded user: {}", user.name);
     Ok(user)
 }
 
 fn init_state() -> AppState {
-    info!("Initializing application state");
+    log::info!("Initializing application state");
     let friends = load_friends_list("friends.json").expect("Failed to load friends list");
     let user = load_user("user.json").expect("Failed to load user");
     AppState { user, friends }
@@ -179,13 +179,13 @@ fn init_state() -> AppState {
 
 fn main() {
     env_logger::init();
-    info!("Starting application");
-    info!(
+    log::info!("Starting application");
+    log::info!(
         "Current directory: {}",
         env::current_dir().unwrap().display()
     );
     let app = init_state();
-    info!("App state: {}", app);
+    log::info!("App state: {}", app);
 
     // Initialize XMPP manager
     let xmpp_manager = XmppManager::new();
@@ -215,14 +215,14 @@ fn main() {
 
 #[command]
 fn get_user(state: App) -> Result<User, String> {
-    info!("Getting user information");
+    log::info!("Getting user information");
     let app = state.lock().expect("Failed to lock state");
     Ok(app.user.clone())
 }
 
 #[command]
 fn update_username(state: App, name: String) -> Result<User, String> {
-    info!("Updating username to: {}", name);
+    log::info!("Updating username to: {}", name);
     println!("Updating username to: {}", name);
     let mut app = state.lock().expect("Failed to lock state");
     app.user.name = name;
@@ -231,7 +231,7 @@ fn update_username(state: App, name: String) -> Result<User, String> {
 
 #[command]
 fn get_friends(state: App) -> Result<(Vec<Friend>, Vec<Friend>), String> {
-    info!("Getting friends list");
+    log::info!("Getting friends list");
     let app = state.lock().expect("Failed to lock state");
     Ok(app.friends_by_availability())
 }
@@ -244,7 +244,7 @@ fn update_friend(
     status: Option<String>,
     availability: Option<Availability>,
 ) -> Result<Friend, String> {
-    info!("Updating friend: {}", email);
+    log::info!("Updating friend: {}", email);
     let mut app = state.lock().expect("Failed to lock state");
     let friend_index = app
         .friends
@@ -263,7 +263,7 @@ fn add_friend(
     status: Option<String>,
     availability: Option<Availability>,
 ) -> Result<Friend, String> {
-    info!("Adding new friend: {} <{}>", name, email);
+    log::info!("Adding new friend: {} <{}>", name, email);
     let mut app = state.lock().expect("Failed to lock state");
     let friend = Friend::new(name, email, status, availability);
     app.friends.push(friend.clone());
@@ -278,17 +278,32 @@ async fn xmpp_connect(
     xmpp_state: State<'_, XmppState>,
     jid: String,
     password: String,
-) -> Result<String, String> {
-    info!("XMPP connect command called for JID: {}", jid);
+) -> Result<serde_json::Value, String> {
+    log::info!("XMPP connect command called for JID: {}", jid);
     let mut xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.set_app_handle(app_handle);
-    xmpp_manager.connect(jid, password).await?;
-    Ok("Connected successfully".to_string())
+    
+    match xmpp_manager.connect(jid, password).await {
+        Ok(_) => {
+            log::info!("XMPP connection successful");
+            Ok(serde_json::json!({
+                "success": true,
+                "message": "Connected successfully"
+            }))
+        }
+        Err(e) => {
+            log::error!("XMPP connection failed: {}", e);
+            Ok(serde_json::json!({
+                "success": false,
+                "error": e
+            }))
+        }
+    }
 }
 
 #[command]
 async fn xmpp_disconnect(xmpp_state: State<'_, XmppState>) -> Result<String, String> {
-    info!("XMPP disconnect command called");
+    log::info!("XMPP disconnect command called");
     let mut xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.disconnect().await?;
     Ok("Disconnected successfully".to_string())
@@ -299,11 +314,26 @@ async fn xmpp_send_message(
     xmpp_state: State<'_, XmppState>,
     to_jid: String,
     body: String,
-) -> Result<String, String> {
-    info!("XMPP send message command called");
+) -> Result<serde_json::Value, String> {
+    log::info!("XMPP send message command called for: {}", to_jid);
     let xmpp_manager = xmpp_state.lock().await;
-    xmpp_manager.send_message(to_jid, body).await?;
-    Ok("Message sent successfully".to_string())
+    
+    match xmpp_manager.send_message(to_jid, body).await {
+        Ok(_) => {
+            log::info!("Message sent successfully via XMPP");
+            Ok(serde_json::json!({
+                "success": true,
+                "message": "Message sent successfully"
+            }))
+        }
+        Err(e) => {
+            log::error!("Failed to send XMPP message: {}", e);
+            Ok(serde_json::json!({
+                "success": false,
+                "error": e
+            }))
+        }
+    }
 }
 
 #[command]
@@ -312,7 +342,7 @@ async fn xmpp_set_presence(
     availability: Availability,
     status: Option<String>,
 ) -> Result<String, String> {
-    info!("XMPP set presence command called");
+    log::info!("XMPP set presence command called");
     let xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.set_presence(availability, status).await?;
     Ok("Presence updated successfully".to_string())
@@ -320,7 +350,7 @@ async fn xmpp_set_presence(
 
 #[command]
 async fn xmpp_add_contact(xmpp_state: State<'_, XmppState>, jid: String) -> Result<String, String> {
-    info!("XMPP add contact command called");
+    log::info!("XMPP add contact command called");
     let xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.add_contact(jid).await?;
     Ok("Contact addition request sent".to_string())
