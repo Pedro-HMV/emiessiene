@@ -40,11 +40,9 @@ pub fn Chat(// show: WriteSignal<bool>,
 
     let navigate = use_navigate();
 
-    let params = move || use_params_map();
-
     // Capture the friend_id once at component initialization
-    let static_friend_id = params()
-        .read()
+    let static_friend_id = use_params_map()
+        .get_untracked()
         .get("id")
         .and_then(|id| id.parse::<usize>().ok())
         .unwrap_or(0);

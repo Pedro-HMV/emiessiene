@@ -8,13 +8,22 @@ use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"], js_name = "invoke", catch)]
+    async fn invoke_catching(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+}
+
 use super::friend_component::Friend;
 use super::models;
-use models::{Friend, UpdateUsernameArgs, User};
+use models::{Availability, Friend, UpdateAvailabilityArgs, UpdateFlavourTextArgs, UpdateUsernameArgs, User};
 
 #[component]
 pub fn MainPage() -> impl IntoView {
     let (editing_user, set_editing_user) = signal(false);
+    let (editing_flavour_text, set_editing_flavour_text) = signal(false);
+    let (editing_availability, set_editing_availability) = signal(false);
+    let flavour_input_ref = NodeRef::<leptos::html::Input>::new();
     let (connection_status, set_connection_status) = signal("🔌 Checking connection...".to_string());
 
     // Use the global user context instead of creating a local one
@@ -39,13 +48,13 @@ pub fn MainPage() -> impl IntoView {
                     match from_value::<serde_json::Value>(result) {
                         Ok(status) => {
                             if status["connected"].as_bool().unwrap_or(false) {
-                                set_connection_status.set("🟢 Connected".to_string());
+                                set_connection_status.set("Connected".to_string());
                             } else {
-                                set_connection_status.set("� Disconnected".to_string());
+                                set_connection_status.set("Disconnected".to_string());
                             }
                         }
                         Err(_) => {
-                            set_connection_status.set("🔴 Disconnected".to_string());
+                            set_connection_status.set("Disconnected".to_string());
                         }
                     }
                 }
@@ -68,14 +77,14 @@ pub fn MainPage() -> impl IntoView {
             let connected_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_connection_status = set_connection_status;
                 move |_event: JsValue| {
-                    set_connection_status.set("🟢 Connected".to_string());
+                    set_connection_status.set("Connected".to_string());
                 }
             }) as Box<dyn Fn(JsValue)>);
 
             let disconnected_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_connection_status = set_connection_status;
                 move |_event: JsValue| {
-                    set_connection_status.set("🔴 Disconnected".to_string());
+                    set_connection_status.set("Disconnected".to_string());
                 }
             }) as Box<dyn Fn(JsValue)>);
 
@@ -127,6 +136,65 @@ pub fn MainPage() -> impl IntoView {
         }
     };
 
+    let blur_on_enter_ft = move |ev: KeyboardEvent| {
+        if ev.key() == "Enter" {
+            let target = ev.target().unwrap();
+            let el: &HtmlInputElement = target.dyn_ref().expect("Failed to get input element");
+            el.blur().unwrap();
+        }
+    };
+
+    // Auto-focus the flavour text input whenever editing mode is activated.
+    // spawn_local defers one microtask tick, giving <Show> time to mount the <input>
+    // before we call focus() on it via the NodeRef.
+    Effect::new(move |_| {
+        if editing_flavour_text.get() {
+            spawn_local(async move {
+                if let Some(el) = flavour_input_ref.get_untracked() {
+                    let _ = el.focus();
+                }
+            });
+        }
+    });
+
+    let update_flavour_text_handler = move |ev: FocusEvent| {
+        ev.prevent_default();
+        let ft = event_target_value(&ev);
+        leptos::logging::log!("update_flavour_text_handler fired, value = {:?}", ft);
+        // Update signal immediately so the UI reflects it without waiting for the backend
+        set_user.update(|u| u.flavour_text = ft.clone());
+        set_editing_flavour_text.set(false);
+        // Persist in the background
+        spawn_local(async move {
+            match invoke_catching(
+                "update_flavour_text",
+                to_value(&UpdateFlavourTextArgs { flavour_text: &ft }).unwrap(),
+            )
+            .await
+            {
+                Ok(_) => leptos::logging::log!("update_flavour_text saved ok"),
+                Err(e) => leptos::logging::warn!("update_flavour_text failed: {:?}", e),
+            }
+        });
+    };
+
+    let select_availability = move |avail: Availability| {
+        set_editing_availability.set(false);
+        spawn_local(async move {
+            let args = UpdateAvailabilityArgs { availability: avail };
+            let result = invoke(
+                "update_availability",
+                to_value(&args).unwrap(),
+            )
+            .await;
+            if let Ok(updated_user) = from_value::<User>(result) {
+                set_user.update(|u| {
+                    u.availability = updated_user.availability;
+                });
+            }
+        });
+    };
+
     let chat_tabs = move || {
         open_chats()
             .get()
@@ -165,14 +233,14 @@ pub fn MainPage() -> impl IntoView {
                     </div>
                     <div id="header_right" class="ml-1">
                         <div id="header_info">
-                            <div id="name">
+                            <div class="user-name-row">
                                 <Show
                                     when=move || { editing_user.get() }
                                     fallback=move || {
                                         view! {
                                             <span
                                                 on:click=move |_| set_editing_user.set(true)
-                                                class="bold"
+                                                class="user-display-name"
                                             >
                                                 {move || user.get().name}
                                             </span>
@@ -182,34 +250,81 @@ pub fn MainPage() -> impl IntoView {
                                     <input
                                         on:blur=update_username
                                         on:keydown=blur_on_enter
-                                        class="user-edit_input"
+                                        class="user-edit_input user-name-input"
                                         value=move || user.get().name
                                     />
                                 </Show>
-                                " ("
-                                {move || user.get().availability.to_string()}
-                                ")"
-                                <span class="tabbed-down-arrow">"🔽"</span>
+                                <Show
+                                    when=move || editing_availability.get()
+                                    fallback=move || view! {
+                                        <span class="user-availability-parens">
+                                            " ("
+                                            <span class="user-availability-text">
+                                                {move || user.get().availability.to_string()}
+                                            </span>
+                                            ")"
+                                        </span>
+                                    }
+                                >
+                                    <div class="avail-dropdown">
+                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Online)>"Online"</button>
+                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Away)>"Away"</button>
+                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Busy)>"Busy"</button>
+                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Offline)>"Offline"</button>
+                                    </div>
+                                </Show>
+                                <button
+                                    class="avail-arrow-btn"
+                                    on:click=move |_| set_editing_availability.update(|v| *v = !*v)
+                                >
+                                    "▾"
+                                </button>
                             </div>
-                            <div id="status-message">
-                                {move || user.get().flavour_text}
-                                <span class="tabbed-down-arrow">"🔽"</span>
+                            <div class="user-flavour-row">
+                                <Show
+                                    when=move || editing_flavour_text.get()
+                                    fallback=move || view! {
+                                        <span
+                                            class="user-flavour-text"
+                                            class:user-flavour-placeholder=move || user.get().flavour_text.is_empty()
+                                            on:click=move |_| set_editing_flavour_text.set(true)
+                                        >
+                                            {move || {
+                                                let ft = user.get().flavour_text;
+                                                if ft.is_empty() {
+                                                    "<Type a personal message>".to_string()
+                                                } else {
+                                                    ft
+                                                }
+                                            }}
+                                        </span>
+                                    }
+                                >
+                                    <input
+                                        node_ref=flavour_input_ref
+                                        on:blur=update_flavour_text_handler
+                                        on:keydown=blur_on_enter_ft
+                                        class="user-edit_input user-flavour-input"
+                                        value=move || user.get().flavour_text
+                                    />
+                                </Show>
                             </div>
-                            <div id="connection-status" class="mt-1">
-                                <span class="mr-1">
+                            <div class="user-status-row">
+                                <span class="xmpp-dot">
                                     {move || {
-                                        if connection_status.get() == "Connected" {
+                                        if connection_status.get().contains("Connected") {
                                             "🟢"
                                         } else {
                                             "🔴"
                                         }
                                     }}
                                 </span>
-                                <span style="font-size: 12px; color: #666;">
-                                    {move || format!("XMPP: {}", connection_status.get())}
+                                <span class="xmpp-label">
+                                    {move || connection_status.get()}
                                 </span>
+                                <span class="status-sep">"|"</span>
+                                <span class="sign-out-link"><A href="/">"Sign Out"</A></span>
                             </div>
-                            <A href="/">"Sign Out"</A>
                         </div>
                     </div>
                 </div>

@@ -90,6 +90,39 @@ struct AppState {
 // Separate state for XMPP manager since it contains non-serializable types
 type XmppState = std::sync::Arc<tokio::sync::Mutex<XmppManager>>;
 
+#[derive(Serialize, Deserialize, Clone)]
+struct SavedProfile {
+    jid: String,
+    nickname: String,
+    flavour_text: String,
+}
+
+fn read_profile_data(app_handle: &tauri::AppHandle) -> serde_json::Value {
+    let config = app_handle.config();
+    let data_dir = match tauri::api::path::app_data_dir(&config) {
+        Some(d) => d,
+        None => return serde_json::json!({}),
+    };
+    let file_path = data_dir.join("nto_remembered.json");
+    if !file_path.exists() {
+        return serde_json::json!({});
+    }
+    match std::fs::read_to_string(&file_path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({})),
+        Err(_) => serde_json::json!({}),
+    }
+}
+
+fn write_profile_data(app_handle: &tauri::AppHandle, json: &serde_json::Value) -> Result<(), String> {
+    let config = app_handle.config();
+    let data_dir = tauri::api::path::app_data_dir(&config)
+        .ok_or_else(|| "Failed to get app data directory".to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let file_path = data_dir.join("nto_remembered.json");
+    std::fs::write(&file_path, serde_json::to_string(json).unwrap())
+        .map_err(|e| e.to_string())
+}
+
 impl AppState {
     fn friends_by_availability(&self) -> (Vec<Friend>, Vec<Friend>) {
         log::info!("Sorting friends by availability");
@@ -177,7 +210,10 @@ fn main() {
             update_friend,
             add_friend,
             update_username,
+            update_flavour_text,
+            update_availability,
             get_saved_jid,
+            get_saved_profile,
             save_jid,
             // XMPP commands
             xmpp_connect,
@@ -200,12 +236,30 @@ fn get_user(state: App) -> Result<User, String> {
 }
 
 #[command]
-fn update_username(state: App, name: String) -> Result<User, String> {
+async fn update_username(
+    state: App<'_>,
+    xmpp_state: State<'_, XmppState>,
+    app_handle: tauri::AppHandle,
+    name: String,
+) -> Result<User, String> {
     log::info!("Updating username to: {}", name);
-    println!("Updating username to: {}", name);
-    let mut app = state.lock().expect("Failed to lock state");
-    app.user.name = name;
-    Ok(app.user.clone())
+    let user = {
+        let mut app = state.lock().expect("Failed to lock state");
+        app.user.name = name.clone();
+        app.user.clone()
+    };
+    // Persist nickname across sessions
+    let mut json = read_profile_data(&app_handle);
+    json["nickname"] = serde_json::Value::String(name.clone());
+    let _ = write_profile_data(&app_handle, &json);
+    // Best-effort vCard nickname update — don't fail if XMPP isn't connected
+    let xmpp = xmpp_state.lock().await;
+    if xmpp.is_connected().await {
+        if let Err(e) = xmpp.set_vcard_nickname(name).await {
+            log::warn!("Failed to update vCard nickname via XMPP: {}", e);
+        }
+    }
+    Ok(user)
 }
 
 #[command]
@@ -250,31 +304,84 @@ fn add_friend(
 }
 
 #[command]
-fn get_saved_jid(app_handle: tauri::AppHandle) -> Result<String, String> {
-    let config = app_handle.config();
-    let data_dir = tauri::api::path::app_data_dir(&config)
-        .ok_or_else(|| "Failed to get app data directory".to_string())?;
-    let file_path = data_dir.join("nto_remembered.json");
-    if !file_path.exists() {
-        return Ok(String::new());
+async fn update_flavour_text(
+    state: App<'_>,
+    xmpp_state: State<'_, XmppState>,
+    app_handle: tauri::AppHandle,
+    flavour_text: String,
+) -> Result<User, String> {
+    log::info!("Updating flavour text");
+    let (user, availability) = {
+        let mut app = state.lock().expect("Failed to lock state");
+        app.user.flavour_text = flavour_text.clone();
+        let user = app.user.clone();
+        let availability = user.availability.clone();
+        (user, availability)
+    };
+    // Persist flavour_text across sessions
+    let mut json = read_profile_data(&app_handle);
+    json["flavour_text"] = serde_json::Value::String(flavour_text.clone());
+    match write_profile_data(&app_handle, &json) {
+        Ok(_) => log::info!("Saved flavour_text='{}' to profile", flavour_text),
+        Err(e) => log::error!("Failed to save flavour_text to profile: {}", e),
     }
-    let file = File::open(&file_path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
-    let json: serde_json::Value = serde_json::from_reader(reader).map_err(|e| e.to_string())?;
+    // In XMPP, the <status> element in a presence stanza carries the flavour_text
+    let xmpp = xmpp_state.lock().await;
+    if xmpp.is_connected().await {
+        let status = if flavour_text.is_empty() { None } else { Some(flavour_text) };
+        if let Err(e) = xmpp.set_presence(availability, status).await {
+            log::warn!("Failed to update XMPP presence status text: {}", e);
+        }
+    }
+    Ok(user)
+}
+
+#[command]
+async fn update_availability(
+    state: App<'_>,
+    xmpp_state: State<'_, XmppState>,
+    availability: Availability,
+) -> Result<User, String> {
+    log::info!("Updating availability to: {:?}", availability);
+    let (user, flavour_text) = {
+        let mut app = state.lock().expect("Failed to lock state");
+        app.user.availability = availability.clone();
+        let user = app.user.clone();
+        let ft = if user.flavour_text.is_empty() { None } else { Some(user.flavour_text.clone()) };
+        (user, ft)
+    };
+    // Send updated XMPP presence (skip for Offline — that's handled by disconnect)
+    let xmpp = xmpp_state.lock().await;
+    if xmpp.is_connected().await && !matches!(availability, Availability::Offline) {
+        if let Err(e) = xmpp.set_presence(availability, flavour_text).await {
+            log::warn!("Failed to update XMPP presence availability: {}", e);
+        }
+    }
+    Ok(user)
+}
+
+#[command]
+fn get_saved_jid(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let json = read_profile_data(&app_handle);
     Ok(json["jid"].as_str().unwrap_or("").to_string())
 }
 
 #[command]
+fn get_saved_profile(app_handle: tauri::AppHandle) -> Result<SavedProfile, String> {
+    let json = read_profile_data(&app_handle);
+    Ok(SavedProfile {
+        jid: json["jid"].as_str().unwrap_or("").to_string(),
+        nickname: json["nickname"].as_str().unwrap_or("").to_string(),
+        flavour_text: json["flavour_text"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+#[command]
 fn save_jid(app_handle: tauri::AppHandle, jid: String) -> Result<(), String> {
-    let config = app_handle.config();
-    let data_dir = tauri::api::path::app_data_dir(&config)
-        .ok_or_else(|| "Failed to get app data directory".to_string())?;
-    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let file_path = data_dir.join("nto_remembered.json");
-    let json = serde_json::json!({ "jid": jid });
-    std::fs::write(&file_path, serde_json::to_string(&json).unwrap())
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    // Read-modify-write to preserve existing nickname and flavour_text
+    let mut json = read_profile_data(&app_handle);
+    json["jid"] = serde_json::Value::String(jid);
+    write_profile_data(&app_handle, &json)
 }
 
 // XMPP Commands

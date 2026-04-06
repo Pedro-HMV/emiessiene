@@ -6,6 +6,24 @@ pub struct UpdateUsernameArgs<'a> {
     pub name: &'a str,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SavedProfile {
+    pub jid: String,
+    pub nickname: String,
+    pub flavour_text: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UpdateFlavourTextArgs<'a> {
+    #[serde(rename = "flavourText")]
+    pub flavour_text: &'a str,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UpdateAvailabilityArgs {
+    pub availability: Availability,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct User {
     pub name: String,

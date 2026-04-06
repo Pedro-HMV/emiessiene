@@ -1,11 +1,15 @@
 use futures::StreamExt;
 use log::{error, info, warn};
+use minidom::Element as MinidomElement;
 use serde::{Deserialize, Serialize};
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tauri::Manager;
 use tokio::sync::{mpsc, Mutex};
 use tokio_xmpp::parsers::iq::Iq as XmppIq;
-use tokio_xmpp::parsers::message::{Message as XmppMsg, Lang};
+use tokio_xmpp::parsers::message::{Lang, Message as XmppMsg};
 use tokio_xmpp::parsers::presence::{Presence, Show, Type as PresenceType};
 use tokio_xmpp::parsers::roster::Roster;
 use tokio_xmpp::{Event, Stanza};
@@ -46,6 +50,7 @@ enum OutgoingCmd {
         show: Option<String>,
         status_text: Option<String>,
     },
+    SetVcardNickname(String),
     Disconnect,
 }
 
@@ -53,9 +58,12 @@ enum OutgoingCmd {
 // Allows the app to connect to a local dev server with a self-signed cert.
 #[cfg(debug_assertions)]
 mod insecure_connector {
-    use std::borrow::Cow;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     use sasl::common::ChannelBinding;
+    use std::borrow::Cow;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use tokio::io::BufStream;
     use tokio::net::TcpStream;
     use tokio_xmpp::{
@@ -97,14 +105,20 @@ mod insecure_connector {
                 .danger_accept_invalid_certs(true)
                 .build()
                 .map_err(|e| {
-                    XmppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                    XmppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
                 })?;
             let tokio_connector = tokio_native_tls::TlsConnector::from(native_connector);
             let tls_stream = tokio_connector
                 .connect(jid.domain().as_str(), tcp)
                 .await
                 .map_err(|e| {
-                    XmppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                    XmppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
                 })?;
 
             // XMPP stream initiation — Cow::Owned avoids borrow lifetime issues
@@ -181,7 +195,11 @@ impl XmppManager {
             tokio_xmpp::Client::new_with_connector(
                 jid,
                 password,
-                InsecureTlsConnector { host: domain, port: 5223, stop: stop_flag.clone() },
+                InsecureTlsConnector {
+                    host: domain,
+                    port: 5223,
+                    stop: stop_flag.clone(),
+                },
                 tokio_xmpp::xmlstream::Timeouts::default(),
             )
         };
@@ -199,7 +217,14 @@ impl XmppManager {
         let own_jid = jid_str.clone();
 
         // Spawn the background event loop
-        let handle = tokio::spawn(xmpp_event_loop(client, rx, app_handle, status_arc, own_jid, Some(auth_tx)));
+        let handle = tokio::spawn(xmpp_event_loop(
+            client,
+            rx,
+            app_handle,
+            status_arc,
+            own_jid,
+            Some(auth_tx),
+        ));
 
         self.sender = Some(tx);
         self.task_handle = Some(handle);
@@ -208,10 +233,7 @@ impl XmppManager {
         // reconnect loop on auth failures (NotAuthorized is retried forever inside
         // StanzaStream::new_c2s — see the "TODO: auth errors should probably be fatal"
         // comment in tokio-xmpp's stanzastream/mod.rs).
-        let auth_result = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            auth_rx,
-        ).await;
+        let auth_result = tokio::time::timeout(std::time::Duration::from_secs(15), auth_rx).await;
 
         let outcome = match auth_result {
             Ok(Ok(Ok(()))) => {
@@ -294,6 +316,21 @@ impl XmppManager {
                 .map_err(|e| format!("Failed to emit contact added event: {}", e))?;
         }
         Ok(())
+    }
+
+    pub async fn set_vcard_nickname(&self, nickname: String) -> Result<(), String> {
+        info!("Queueing vCard nickname update: {}", nickname);
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::SetVcardNickname(nickname))
+            .await
+            .map_err(|e| format!("Failed to queue vCard update: {}", e))
     }
 
     pub async fn disconnect(&mut self) -> Result<(), String> {
@@ -513,6 +550,25 @@ async fn xmpp_event_loop(
                             error!("Failed to send presence stanza: {}", e);
                         }
                     }
+                    Some(OutgoingCmd::SetVcardNickname(nickname)) => {
+                        let vcard_ns = "vcard-temp";
+                        let vcard_el = MinidomElement::builder("vCard", vcard_ns)
+                            .append(
+                                MinidomElement::builder("NICKNAME", vcard_ns)
+                                    .append(minidom::Node::Text(nickname))
+                                    .build()
+                            )
+                            .build();
+                        let iq = XmppIq::Set {
+                            from: None,
+                            to: None,
+                            id: uuid::Uuid::new_v4().to_string(),
+                            payload: vcard_el,
+                        };
+                        if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
+                            error!("Failed to send vCard nickname IQ: {}", e);
+                        }
+                    }
                     Some(OutgoingCmd::Disconnect) | None => {
                         info!("Disconnect command received, closing XMPP stream");
                         if let Err(e) = client.send_end().await {
@@ -526,4 +582,3 @@ async fn xmpp_event_loop(
     }
     info!("XMPP event loop terminated");
 }
-

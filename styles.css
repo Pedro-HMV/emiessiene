@@ -126,6 +126,179 @@ ul {
   margin-left: 2rem;
 }
 
+/* ── User header (WLM-inspired) ─────────────────────────────── */
+
+/* Name + availability row */
+.user-name-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0;
+  line-height: 1.4;
+  position: relative;
+}
+
+.user-display-name {
+  font-weight: bold;
+  font-size: 1rem;
+  cursor: pointer;
+  margin-right: 0.3em;
+}
+
+.user-display-name:hover {
+  text-decoration: underline;
+}
+
+.user-name-input {
+  font-weight: bold;
+  font-size: 1rem;
+  width: 160px;
+  margin-right: 0.3em;
+}
+
+.user-availability-parens {
+  font-size: 0.85rem;
+  color: #333;
+  white-space: nowrap;
+}
+
+.user-availability-text {
+  font-size: 0.85rem;
+}
+
+/* Availability select — blends with the gradient header */
+#availability-select {
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(100, 140, 170, 0.5);
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: #1a1a2e;
+  padding: 0 2px;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+#availability-select:focus {
+  outline: 1px solid #6a9fb5;
+}
+
+/* Always-open custom availability dropdown */
+.avail-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: white;
+  border: 1px solid rgba(100, 140, 170, 0.55);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  min-width: 90px;
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0;
+}
+
+.avail-option {
+  background: transparent;
+  border: none;
+  border-image: none;
+  padding: 3px 10px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  font-weight: normal;
+  text-align: left;
+  cursor: pointer;
+  color: #1a1a2e;
+}
+
+.avail-option:hover {
+  background: #d0e4f0;
+}
+
+.avail-option:active {
+  background: #b5d3e8;
+  border-color: transparent;
+}
+
+/* Small arrow button that toggles the availability dropdown */
+.avail-arrow-btn {
+  background: transparent;
+  border: none;
+  padding: 0 3px;
+  font-size: 0.75rem;
+  color: #446;
+  cursor: pointer;
+  vertical-align: baseline;
+  line-height: 1;
+}
+
+.avail-arrow-btn:hover {
+  color: #000;
+}
+
+/* Flavour text (personal message) row */
+.user-flavour-row {
+  margin-top: 2px;
+}
+
+.user-flavour-text {
+  font-size: 0.82rem;
+  color: #3a5a6a;
+  cursor: pointer;
+  font-style: italic;
+  display: inline-block;
+  min-width: 20px;
+  min-height: 1.2em;
+}
+
+.user-flavour-text:hover {
+  text-decoration: underline;
+}
+
+.user-flavour-placeholder {
+  color: #8aaabb !important;
+  font-style: italic;
+}
+
+.user-flavour-input {
+  font-size: 0.82rem;
+  font-style: italic;
+  width: 200px;
+  color: #3a5a6a;
+}
+
+/* XMPP / sign-out status row */
+.user-status-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 0.72rem;
+  color: #556;
+}
+
+.xmpp-dot {
+  font-size: 0.65rem;
+  line-height: 1;
+}
+
+.xmpp-label {
+  color: #445;
+}
+
+.status-sep {
+  color: #aab;
+}
+
+.sign-out-link {
+  color: #3366aa;
+  text-decoration: none;
+}
+
+.sign-out-link:hover {
+  text-decoration: underline;
+}
+
 .margin-16 {
   margin: 16px;
 }
@@ -224,9 +397,16 @@ button {
 }
 
 .user-edit_input {
-  background-color: white;
-  border: 0.1px solid rgb(124, 124, 124);
-  padding: 5px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(60, 100, 130, 0.55);
+  border-image: none;
+  padding: 1px 2px;
+  outline: none;
+}
+
+.user-edit_input:focus {
+  border-bottom-color: #3a7ca5;
 }
 
 .flex-row {

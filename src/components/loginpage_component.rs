@@ -1,4 +1,4 @@
-use super::models::{Availability, User};
+use super::models::{Availability, SavedProfile, User};
 use leptos::prelude::*;
 use leptos::web_sys;
 use leptos_router::hooks::use_navigate;
@@ -53,20 +53,13 @@ pub fn LoginPage() -> impl IntoView {
         }
     });
 
-    // Pre-fill JID from last remembered login
+    // Pre-fill JID from last remembered login (only needs the jid field)
     spawn_local(async move {
-        match invoke_catching("get_saved_jid", JsValue::null()).await {
-            Ok(result) => {
-                if let Ok(jid) = from_value::<String>(result) {
-                    if !jid.is_empty() {
-                        set_username.set(jid);
-                    }
+        if let Ok(result) = invoke_catching("get_saved_profile", JsValue::null()).await {
+            if let Ok(profile) = from_value::<SavedProfile>(result) {
+                if !profile.jid.is_empty() {
+                    set_username.set(profile.jid);
                 }
-            }
-            Err(e) => {
-                let msg = e.as_string().unwrap_or_else(|| format!("{:?}", e));
-                log::error!("get_saved_jid failed: {}", msg);
-                set_fatal_error.set(Some(msg));
             }
         }
     });
@@ -120,7 +113,7 @@ pub fn LoginPage() -> impl IntoView {
             };
             let password_value = password.get().clone();
             let availability_value = availability.get().clone();
-            let username_value = username.get().clone();
+            let _username_value = username.get().clone();
 
             // Clone the signals for the async block
             let set_user = set_user;
@@ -154,10 +147,29 @@ pub fn LoginPage() -> impl IntoView {
                                     // XMPP connection successful
                                     log::info!("XMPP connection successful for {}", jid);
 
+                                    // Load saved profile now (inside the same async task — no race condition)
+                                    let profile =
+                                        invoke_catching("get_saved_profile", JsValue::null())
+                                            .await
+                                            .ok()
+                                            .and_then(|v| from_value::<SavedProfile>(v).ok());
+
+                                    let display_name = profile
+                                        .as_ref()
+                                        .filter(|p| !p.nickname.is_empty())
+                                        .map(|p| p.nickname.clone())
+                                        .unwrap_or_else(|| {
+                                            jid.split('@').next().unwrap_or(&jid).to_string()
+                                        });
+
+                                    let restored_ft =
+                                        profile.map(|p| p.flavour_text).unwrap_or_default();
+
                                     // Update global user context
                                     set_user.update(|user| {
-                                        user.name = username_value.trim().to_string();
+                                        user.name = display_name;
                                         user.availability = availability_value.clone();
+                                        user.flavour_text = restored_ft;
                                     });
 
                                     // Save JID for remember me
