@@ -19,7 +19,7 @@ pub fn App() -> impl IntoView {
     let (user, set_user) = signal(User {
         name: "Username".to_string(),
         email: "user@hotmail.com".to_string(),
-        status: "Status message".to_string(),
+        flavour_text: "Status message".to_string(),
         availability: Availability::Online,
     });
     let (friends, set_friends) = signal((Vec::<Friend>::new(), Vec::<Friend>::new()));

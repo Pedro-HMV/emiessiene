@@ -1,11 +1,17 @@
 use super::models::{Availability, User};
 use leptos::prelude::*;
+use leptos::web_sys;
 use leptos_router::hooks::use_navigate;
+use serde::{Deserialize, Serialize};
+use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use serde_wasm_bindgen::{from_value, to_value};
-use crate::app::invoke;
-use serde::{Deserialize, Serialize};
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"], js_name = "invoke", catch)]
+    async fn invoke_catching(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+}
 
 // Struct for XMPP connection arguments
 #[derive(Serialize, Deserialize)]
@@ -14,11 +20,9 @@ struct XmppConnectArgs {
     password: String,
 }
 
-// Struct for XMPP presence arguments  
-#[derive(Serialize, Deserialize)]
-struct XmppPresenceArgs {
-    availability: String,
-    status: String,
+#[derive(Serialize)]
+struct SaveJidArgs {
+    jid: String,
 }
 
 #[component]
@@ -30,6 +34,7 @@ pub fn LoginPage() -> impl IntoView {
     let (auto_sign_in, set_auto_sign_in) = signal(false);
     let (is_loading, set_is_loading) = signal(false);
     let (error_message, set_error_message) = signal(String::new());
+    let (fatal_error, set_fatal_error) = signal(Option::<String>::None);
     let navigate = use_navigate();
 
     // Get the global user setter from context
@@ -44,6 +49,24 @@ pub fn LoginPage() -> impl IntoView {
         move |_| {
             if should_navigate.get() {
                 navigate("/main", Default::default());
+            }
+        }
+    });
+
+    // Pre-fill JID from last remembered login
+    spawn_local(async move {
+        match invoke_catching("get_saved_jid", JsValue::null()).await {
+            Ok(result) => {
+                if let Ok(jid) = from_value::<String>(result) {
+                    if !jid.is_empty() {
+                        set_username.set(jid);
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = e.as_string().unwrap_or_else(|| format!("{:?}", e));
+                log::error!("get_saved_jid failed: {}", msg);
+                set_fatal_error.set(Some(msg));
             }
         }
     });
@@ -104,6 +127,8 @@ pub fn LoginPage() -> impl IntoView {
             let set_error_message = set_error_message;
             let set_is_loading = set_is_loading;
             let set_should_navigate = set_should_navigate;
+            let set_fatal_error = set_fatal_error;
+            let remember_me_captured = remember_me.get();
 
             // Spawn async task for XMPP connection
             spawn_local(async move {
@@ -112,47 +137,65 @@ pub fn LoginPage() -> impl IntoView {
                     jid: jid.clone(),
                     password: password_value.clone(),
                 };
+                let connect_js_args = match to_value(&connect_args) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        set_fatal_error.set(Some(format!("Serialization error: {:?}", e)));
+                        set_is_loading.set(false);
+                        return;
+                    }
+                };
 
-                // Try XMPP connection
-                let result = invoke("xmpp_connect", to_value(&connect_args).unwrap()).await;
+                match invoke_catching("xmpp_connect", connect_js_args).await {
+                    Ok(result) => {
+                        match from_value::<serde_json::Value>(result) {
+                            Ok(response) => {
+                                if response["success"].as_bool().unwrap_or(false) {
+                                    // XMPP connection successful
+                                    log::info!("XMPP connection successful for {}", jid);
 
-                // Check if the result indicates success
-                match from_value::<serde_json::Value>(result) {
-                    Ok(response) => {
-                        if response["success"].as_bool().unwrap_or(false) {
-                            // XMPP connection successful
-                            log::info!("XMPP connection successful for {}", jid);
+                                    // Update global user context
+                                    set_user.update(|user| {
+                                        user.name = username_value.trim().to_string();
+                                        user.availability = availability_value.clone();
+                                    });
 
-                            // Update global user context
-                            set_user.update(|user| {
-                                user.name = username_value.trim().to_string();
-                                user.availability = availability_value.clone();
-                            });
+                                    // Save JID for remember me
+                                    if remember_me_captured {
+                                        if let Ok(args) =
+                                            to_value(&SaveJidArgs { jid: jid.clone() })
+                                        {
+                                            let _ = invoke_catching("save_jid", args).await;
+                                        }
+                                    }
 
-                            // Set presence after connection
-                            let presence_args = XmppPresenceArgs {
-                                availability: format!("{:?}", availability_value),
-                                status: "Online via NTO".to_string(),
-                            };
-
-                            let _presence_result = invoke("xmpp_set_presence", to_value(&presence_args).unwrap()).await;
-
-                            // Navigate to main page
-                            set_is_loading.set(false);
-                            set_should_navigate.set(true);
-                        } else {
-                            // XMPP connection failed
-                            let error_msg = response["error"].as_str().unwrap_or("Unknown error");
-                            log::error!("XMPP connection failed: {}", error_msg);
-                            set_error_message
-                                .set("Login failed. Please check your credentials.".to_string());
-                            set_is_loading.set(false);
+                                    // Navigate to main page
+                                    // (initial presence is sent automatically by the backend on Event::Online)
+                                    set_is_loading.set(false);
+                                    set_should_navigate.set(true);
+                                } else {
+                                    // XMPP connection failed
+                                    let error_msg =
+                                        response["error"].as_str().unwrap_or("Unknown error");
+                                    log::error!("XMPP connection failed: {}", error_msg);
+                                    set_error_message.set(
+                                        "Login failed. Please check your credentials.".to_string(),
+                                    );
+                                    set_is_loading.set(false);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to parse XMPP response: {:?}", e);
+                                set_error_message
+                                    .set("Login failed. Connection error.".to_string());
+                                set_is_loading.set(false);
+                            }
                         }
                     }
                     Err(e) => {
-                        log::error!("Failed to parse XMPP response: {:?}", e);
-                        set_error_message
-                            .set("Login failed. Connection error.".to_string());
+                        let msg = e.as_string().unwrap_or_else(|| format!("{:?}", e));
+                        log::error!("xmpp_connect threw: {}", msg);
+                        set_fatal_error.set(Some(msg));
                         set_is_loading.set(false);
                     }
                 }
@@ -161,6 +204,28 @@ pub fn LoginPage() -> impl IntoView {
     };
 
     view! {
+        <Show when=move || fatal_error.get().is_some()>
+            <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:9999;">
+                <div style="background:white;padding:24px;border:2px solid #c00;min-width:300px;max-width:420px;text-align:center;">
+                    <div style="font-weight:bold;font-size:16px;margin-bottom:12px;color:#c00;">
+                        "Error"
+                    </div>
+                    <div style="margin-bottom:20px;font-family:monospace;font-size:13px;word-break:break-all;">
+                        {move || fatal_error.get().unwrap_or_default()}
+                    </div>
+                    <button
+                        style="padding:6px 24px;"
+                        on:click=move |_| {
+                            if let Some(window) = web_sys::window() {
+                                let _ = window.location().reload();
+                            }
+                        }
+                    >
+                        "Ok"
+                    </button>
+                </div>
+            </div>
+        </Show>
         <div id="login_container" class="flex-col">
             <div id="login_title">"NTO"</div>
             <div id="login_avatar">
@@ -236,10 +301,12 @@ pub fn LoginPage() -> impl IntoView {
                 <button type="button" on:click=handle_sign_in disabled=move || is_loading.get()>
                     {move || if is_loading.get() { "Connecting..." } else { "Sign In" }}
                 </button>
-                
+
                 <div class="register-link" style="margin-top: 20px; text-align: center;">
                     "Don't have an account? "
-                    <a href="/register" style="color: #0066cc; text-decoration: none;">"Create Account"</a>
+                    <a href="/register" style="color: #0066cc; text-decoration: none;">
+                        "Create Account"
+                    </a>
                 </div>
             </form>
         </div>

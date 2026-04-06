@@ -1,20 +1,15 @@
-use super::models::{Availability, User};
+use super::models::Availability;
 use crate::app::invoke;
 use leptos::prelude::*;
 use leptos_router::hooks::use_navigate;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{from_value, to_value};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
-// Struct for user registration arguments
 #[derive(Serialize, Deserialize)]
-struct CreateUserArgs {
-    name: String,
-    email: String,
+struct XmppRegisterArgs {
+    jid: String,
     password: String,
-    status: String,
-    availability: String,
 }
 
 #[component]
@@ -36,8 +31,6 @@ pub fn RegisterPage() -> impl IntoView {
         let name_value = name.get();
         let email_value = email.get();
         let password_value = password.get();
-        let status_value = status.get();
-        let availability_value = availability.get();
         let navigate = navigate.clone();
 
         // Basic validation
@@ -57,30 +50,36 @@ pub fn RegisterPage() -> impl IntoView {
         }
 
         spawn_local(async move {
-            // Create user registration arguments
-            let register_args = CreateUserArgs {
-                name: name_value.trim().to_string(),
-                email: email_value.trim().to_string(),
+            let register_args = XmppRegisterArgs {
+                jid: email_value.trim().to_string(),
                 password: password_value.clone(),
-                status: status_value.clone(),
-                availability: format!("{:?}", availability_value),
             };
 
-            // For now, we'll just simulate user creation and navigate to login
-            // In a real implementation, this would call a create_user command
-            log::info!(
-                "Creating user: {} <{}>",
-                register_args.name,
-                register_args.email
-            );
+            log::info!("Registering XMPP account for {}", register_args.jid);
 
-            // Simulate a brief delay using gloo_timers
-            gloo_timers::future::TimeoutFuture::new(1000).await;
+            let result = invoke("xmpp_register", to_value(&register_args).unwrap()).await;
 
-            set_is_loading.set(false);
-
-            // Navigate to login page with success message
-            navigate("/", Default::default());
+            match from_value::<serde_json::Value>(result) {
+                Ok(resp) if resp["success"].as_bool().unwrap_or(false) => {
+                    log::info!("Registration successful for {}", register_args.jid);
+                    set_is_loading.set(false);
+                    navigate("/", Default::default());
+                }
+                Ok(resp) => {
+                    let msg = resp["error"]
+                        .as_str()
+                        .unwrap_or("Registration failed")
+                        .to_string();
+                    log::error!("Registration failed: {}", msg);
+                    set_error_message.set(msg);
+                    set_is_loading.set(false);
+                }
+                Err(e) => {
+                    log::error!("Failed to parse registration response: {:?}", e);
+                    set_error_message.set("Connection error during registration".to_string());
+                    set_is_loading.set(false);
+                }
+            }
         });
     };
 

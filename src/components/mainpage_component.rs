@@ -192,7 +192,7 @@ pub fn MainPage() -> impl IntoView {
                                 <span class="tabbed-down-arrow">"🔽"</span>
                             </div>
                             <div id="status-message">
-                                {move || user.get().status}
+                                {move || user.get().flavour_text}
                                 <span class="tabbed-down-arrow">"🔽"</span>
                             </div>
                             <div id="connection-status" class="mt-1">
@@ -240,7 +240,7 @@ pub fn MainPage() -> impl IntoView {
                                         <Friend
                                             availability=signal(friend.availability).0
                                             name=signal(friend.name).0
-                                            status=signal(friend.status).0
+                                            flavour_text=signal(friend.flavour_text).0
                                         />
                                     </A>
                                 </li>
@@ -262,7 +262,7 @@ pub fn MainPage() -> impl IntoView {
                                     <Friend
                                         availability=signal(friend.availability).0
                                         name=signal(friend.name).0
-                                        status=signal(friend.status).0
+                                        flavour_text=signal(friend.flavour_text).0
                                     />
                                 </li>
                             }

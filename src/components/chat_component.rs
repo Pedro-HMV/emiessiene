@@ -208,7 +208,7 @@ pub fn Chat(// show: WriteSignal<bool>,
                             }}
                         </span>
                         <span class="chat_receiver-status-message">
-                            {move || friends.get().0[friend_id()].status.clone()}
+                            {move || friends.get().0[friend_id()].flavour_text.clone()}
                             <span class="ml-1">
                                 {move || {
                                     format!("<{}>", friends.get().0[friend_id()].email.clone())

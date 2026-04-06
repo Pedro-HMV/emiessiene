@@ -1,0 +1,111 @@
+###
+###   ejabberd configuration for NTO local development
+###
+
+hosts:
+  - localhost
+
+loglevel: info
+
+# TLS certificate — generated with SAN=DNS:localhost, stored in the persistent ejabberd_certs volume
+certfiles:
+  - /home/ejabberd/conf/certs/localhost.pem
+
+listen:
+  # Direct-TLS on 5223 — this is what NTO uses (Client::new_direct_tls)
+  -
+    port: 5223
+    ip: "::"
+    module: ejabberd_c2s
+    tls: true
+    max_stanza_size: 262144
+    shaper: c2s_shaper
+    access: c2s
+
+  # STARTTLS on 5222 — standard client port, keep for tooling compatibility
+  -
+    port: 5222
+    ip: "::"
+    module: ejabberd_c2s
+    starttls: true
+    max_stanza_size: 262144
+    shaper: c2s_shaper
+    access: c2s
+
+  # HTTP admin interface
+  -
+    port: 5280
+    ip: "::"
+    module: ejabberd_http
+    request_handlers:
+      /admin: ejabberd_web_admin
+      /api: mod_http_api
+      /bosh: mod_bosh
+
+acl:
+  local:
+    user_regexp: ""
+  loopback:
+    ip:
+      - 127.0.0.0/8
+      - "::1/128"
+  admin:
+    user:
+      - admin@localhost
+
+access_rules:
+  local:
+    allow: local
+  c2s:
+    deny: blocked
+    allow: all
+  # Allow anyone to register — development only, never do this in production
+  register:
+    allow: all
+  announce:
+    allow: admin
+
+shaper:
+  normal:
+    rate: 3000
+    burst_size: 20000
+  fast: 200000
+
+shaper_rules:
+  max_user_sessions: 10
+  max_user_offline_messages:
+    5000: admin
+    100: all
+  c2s_shaper:
+    none: admin
+    normal: all
+
+modules:
+  mod_adhoc: {}
+  mod_announce:
+    access: announce
+  mod_caps: {}
+  mod_carboncopy: {}
+  mod_client_state: {}
+  mod_configure: {}
+  mod_disco: {}
+  mod_last: {}
+  mod_mam:
+    assume_mam_usage: true
+    default: always
+  mod_ping: {}
+  mod_privacy: {}
+  mod_private: {}
+  mod_roster:
+    versioning: true
+  mod_s2s_dialback: {}
+  mod_stream_mgmt:
+    resend_on_timeout: if_offline
+  mod_vcard: {}
+  mod_vcard_xupdate: {}
+  mod_version:
+    show_os: false
+  # In-band registration (XEP-0077) — what xmpp_register calls
+  mod_register:
+    ip_access: allow
+    access: register

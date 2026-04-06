@@ -5,11 +5,11 @@ use leptos::prelude::*;
 pub fn Friend(
     availability: ReadSignal<Availability>,
     name: ReadSignal<String>,
-    status: ReadSignal<String>,
+    flavour_text: ReadSignal<String>,
 ) -> impl IntoView {
     let format_status = move || {
-        if !status.get().is_empty() {
-            format!(" - {}", status.get())
+        if !flavour_text.get().is_empty() {
+            format!(" - {}", flavour_text.get())
         } else {
             "".to_string()
         }

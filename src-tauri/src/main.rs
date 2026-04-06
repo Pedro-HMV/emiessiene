@@ -18,23 +18,15 @@ type App<'a> = State<'a, Mutex<AppState>>;
 struct User {
     name: String,
     email: String,
-    status: String,
+    flavour_text: String,
     availability: Availability,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct UserJson {
-    name: String,
-    email: String,
-    status: String,
-    availability: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Friend {
     name: String,
     email: String,
-    status: String,
+    flavour_text: String,
     availability: Availability,
 }
 
@@ -42,14 +34,14 @@ impl Friend {
     fn new(
         name: String,
         email: String,
-        status: Option<String>,
+        flavour_text: Option<String>,
         availability: Option<Availability>,
     ) -> Self {
         log::info!("Creating new friend: {} <{}>", name, email);
         Self {
             name,
             email,
-            status: status.unwrap_or("".to_string()),
+            flavour_text: flavour_text.unwrap_or("".to_string()),
             availability: availability.unwrap_or(Availability::Online),
         }
     }
@@ -57,15 +49,15 @@ impl Friend {
     fn update(
         &mut self,
         name: Option<String>,
-        status: Option<String>,
+        flavour_text: Option<String>,
         availability: Option<Availability>,
     ) {
         log::info!("Updating friend: {}", self.email);
         if let Some(name) = name {
             self.name = name;
         }
-        if let Some(status) = status {
-            self.status = status;
+        if let Some(flavour_text) = flavour_text {
+            self.flavour_text = flavour_text;
         }
         if let Some(availability) = availability {
             self.availability = availability;
@@ -77,7 +69,7 @@ impl Friend {
 struct FriendJson {
     name: String,
     email: String,
-    status: String,
+    flavour_text: String,
     availability: String,
 }
 
@@ -135,7 +127,7 @@ fn load_friends_list(file_path: &str) -> Result<Vec<Friend>, Box<dyn std::error:
         .map(|f| Friend {
             name: f.name,
             email: f.email,
-            status: f.status,
+            flavour_text: f.flavour_text,
             availability: match f.availability.as_str() {
                 "Online" => Availability::Online,
                 "Away" => Availability::Away,
@@ -149,31 +141,15 @@ fn load_friends_list(file_path: &str) -> Result<Vec<Friend>, Box<dyn std::error:
     Ok(friends)
 }
 
-fn load_user(file_path: &str) -> Result<User, Box<dyn std::error::Error>> {
-    log::info!("Loading user from {}", file_path);
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let json: UserJson = serde_json::from_reader(reader)?;
-
-    let user = User {
-        name: json.name,
-        email: json.email,
-        status: json.status,
-        availability: match json.availability.as_str() {
-            "Online" => Availability::Online,
-            "Away" => Availability::Away,
-            "Busy" => Availability::Busy,
-            _ => Availability::Offline,
-        },
-    };
-    log::info!("Loaded user: {}", user.name);
-    Ok(user)
-}
-
 fn init_state() -> AppState {
     log::info!("Initializing application state");
     let friends = load_friends_list("friends.json").expect("Failed to load friends list");
-    let user = load_user("user.json").expect("Failed to load user");
+    let user = User {
+        name: "".into(),
+        email: "".into(),
+        flavour_text: "".into(),
+        availability: Availability::Offline,
+    };
     AppState { user, friends }
 }
 
@@ -201,6 +177,8 @@ fn main() {
             update_friend,
             add_friend,
             update_username,
+            get_saved_jid,
+            save_jid,
             // XMPP commands
             xmpp_connect,
             xmpp_disconnect,
@@ -208,6 +186,7 @@ fn main() {
             xmpp_set_presence,
             xmpp_add_contact,
             xmpp_get_connection_status,
+            xmpp_register,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -241,7 +220,7 @@ fn update_friend(
     state: App,
     email: String,
     name: Option<String>,
-    status: Option<String>,
+    flavour_text: Option<String>,
     availability: Option<Availability>,
 ) -> Result<Friend, String> {
     log::info!("Updating friend: {}", email);
@@ -251,7 +230,7 @@ fn update_friend(
         .iter()
         .position(|f| f.email == email)
         .ok_or("Friend not found")?;
-    app.friends[friend_index].update(name, status, availability);
+    app.friends[friend_index].update(name, flavour_text, availability);
     Ok(app.friends[friend_index].clone())
 }
 
@@ -260,14 +239,42 @@ fn add_friend(
     state: App,
     name: String,
     email: String,
-    status: Option<String>,
+    flavour_text: Option<String>,
     availability: Option<Availability>,
 ) -> Result<Friend, String> {
     log::info!("Adding new friend: {} <{}>", name, email);
     let mut app = state.lock().expect("Failed to lock state");
-    let friend = Friend::new(name, email, status, availability);
+    let friend = Friend::new(name, email, flavour_text, availability);
     app.friends.push(friend.clone());
     Ok(friend)
+}
+
+#[command]
+fn get_saved_jid(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let config = app_handle.config();
+    let data_dir = tauri::api::path::app_data_dir(&config)
+        .ok_or_else(|| "Failed to get app data directory".to_string())?;
+    let file_path = data_dir.join("nto_remembered.json");
+    if !file_path.exists() {
+        return Ok(String::new());
+    }
+    let file = File::open(&file_path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let json: serde_json::Value = serde_json::from_reader(reader).map_err(|e| e.to_string())?;
+    Ok(json["jid"].as_str().unwrap_or("").to_string())
+}
+
+#[command]
+fn save_jid(app_handle: tauri::AppHandle, jid: String) -> Result<(), String> {
+    let config = app_handle.config();
+    let data_dir = tauri::api::path::app_data_dir(&config)
+        .ok_or_else(|| "Failed to get app data directory".to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let file_path = data_dir.join("nto_remembered.json");
+    let json = serde_json::json!({ "jid": jid });
+    std::fs::write(&file_path, serde_json::to_string(&json).unwrap())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // XMPP Commands
@@ -368,4 +375,162 @@ async fn xmpp_get_connection_status(
         "connected": connected,
         "jid": jid
     }))
+}
+
+// Phase E: In-band Registration (XEP-0077)
+// Connects via direct TLS, sends IBR IQ get/set, returns result.
+#[command]
+async fn xmpp_register(
+    jid: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    use std::collections::BTreeMap;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio_xmpp::parsers::ibr::Query as IbrQuery;
+    use tokio_xmpp::parsers::iq::Iq as RegIq;
+
+    log::info!("xmpp_register: attempting IBR registration for JID: {}", jid);
+
+    // Parse domain and username from the JID
+    let bare_jid: jid::BareJid = jid
+        .parse()
+        .map_err(|e| format!("Invalid JID '{}': {}", jid, e))?;
+    let username = bare_jid
+        .node()
+        .ok_or("JID must have a username part (user@domain)")?
+        .to_string();
+    let domain = bare_jid.domain().to_string();
+
+    // Direct-TLS connect (port 5223 – same transport as the main client)
+    let tcp = TcpStream::connect(format!("{}:5223", domain))
+        .await
+        .map_err(|e| format!("TCP connect to {}:5223 failed: {}", domain, e))?;
+
+    let native_connector = {
+        let mut builder = native_tls::TlsConnector::builder();
+        #[cfg(debug_assertions)]
+        builder.danger_accept_invalid_certs(true);
+        builder.build().map_err(|e| format!("TLS connector creation failed: {}", e))?
+    };
+    let connector = tokio_native_tls::TlsConnector::from(native_connector);
+    let mut stream = connector
+        .connect(&domain, tcp)
+        .await
+        .map_err(|e| format!("TLS handshake failed: {}", e))?;
+
+    // Open XMPP stream
+    let stream_open = format!(
+        "<?xml version='1.0'?><stream:stream \
+         xmlns='jabber:client' \
+         xmlns:stream='http://etherx.jabber.org/streams' \
+         to='{}' version='1.0'>",
+        domain
+    );
+    stream
+        .write_all(stream_open.as_bytes())
+        .await
+        .map_err(|e| format!("Stream write error: {}", e))?;
+
+    // Read server greeting + stream features
+    let mut buf = vec![0u8; 8192];
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("Stream read error: {}", e))?;
+    let features = String::from_utf8_lossy(&buf[..n]).to_string();
+
+    if !features.contains("jabber:iq:register")
+        && !features.contains("http://jabber.org/features/iq-register")
+    {
+        log::warn!("xmpp_register: server {} does not advertise IBR support", domain);
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Server does not support in-band registration"
+        }));
+    }
+
+    // Send IBR IQ get (request available registration fields)
+    let get_query = IbrQuery {
+        fields: BTreeMap::new(),
+        registered: false,
+        remove: false,
+        form: None,
+    };
+    let get_iq = RegIq::from_get("reg1", get_query);
+    let get_elem = minidom::Element::from(get_iq);
+    let mut get_xml = Vec::new();
+    get_elem
+        .write_to(&mut get_xml)
+        .map_err(|e| format!("XML serialization error: {}", e))?;
+    stream
+        .write_all(&get_xml)
+        .await
+        .map_err(|e| format!("Stream write error: {}", e))?;
+
+    // Read registration form response
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("Stream read error: {}", e))?;
+    let form_resp = String::from_utf8_lossy(&buf[..n]).to_string();
+    if form_resp.contains("type='error'") || form_resp.contains("type=\"error\"") {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Server returned error for registration query"
+        }));
+    }
+
+    // Build and send IBR IQ set with username + password
+    // minidom handles XML character escaping for field values
+    let mut fields = BTreeMap::new();
+    fields.insert("username".to_string(), username);
+    fields.insert("password".to_string(), password);
+    let set_query = IbrQuery {
+        fields,
+        registered: false,
+        remove: false,
+        form: None,
+    };
+    let set_iq = RegIq::from_set("reg2", set_query);
+    let set_elem = minidom::Element::from(set_iq);
+    let mut set_xml = Vec::new();
+    set_elem
+        .write_to(&mut set_xml)
+        .map_err(|e| format!("XML serialization error: {}", e))?;
+    stream
+        .write_all(&set_xml)
+        .await
+        .map_err(|e| format!("Stream write error: {}", e))?;
+
+    // Read registration result
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("Stream read error: {}", e))?;
+    let result = String::from_utf8_lossy(&buf[..n]).to_string();
+
+    // Close stream gracefully
+    let _ = stream.write_all(b"</stream:stream>").await;
+
+    if result.contains("type='result'") || result.contains("type=\"result\"") {
+        log::info!("xmpp_register: registration successful for JID: {}", jid);
+        Ok(serde_json::json!({ "success": true }))
+    } else if result.contains("conflict") {
+        Ok(serde_json::json!({
+            "success": false,
+            "error": "Username already exists"
+        }))
+    } else if result.contains("type='error'") || result.contains("type=\"error\"") {
+        Ok(serde_json::json!({
+            "success": false,
+            "error": "Registration failed - check server logs for details"
+        }))
+    } else {
+        log::warn!("xmpp_register: unexpected server response for JID: {}", jid);
+        Ok(serde_json::json!({
+            "success": false,
+            "error": "Unexpected server response during registration"
+        }))
+    }
 }

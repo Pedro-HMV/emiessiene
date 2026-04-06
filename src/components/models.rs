@@ -10,7 +10,7 @@ pub struct UpdateUsernameArgs<'a> {
 pub struct User {
     pub name: String,
     pub email: String,
-    pub status: String,
+    pub flavour_text: String,
     pub availability: Availability,
 }
 
@@ -18,7 +18,7 @@ pub struct User {
 pub struct Friend {
     pub name: String,
     pub email: String,
-    pub status: String,
+    pub flavour_text: String,
     pub availability: Availability,
 }
 
