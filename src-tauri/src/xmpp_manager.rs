@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_xmpp::parsers::iq::Iq as XmppIq;
 use tokio_xmpp::parsers::message::{Lang, Message as XmppMsg, MessageType};
 use tokio_xmpp::parsers::presence::{Presence, Show, Type as PresenceType};
-use tokio_xmpp::parsers::roster::Roster;
+use tokio_xmpp::parsers::roster::{Ask, Item as RosterItem, Roster, Subscription};
 use tokio_xmpp::{Event, Stanza};
 
 // Re-export for use in main.rs
@@ -50,7 +50,21 @@ enum OutgoingCmd {
         show: Option<String>,
         status_text: Option<String>,
     },
-    SetVcardNickname(String),
+    SetVcard {
+        nickname: String,
+        desc: String,
+    },
+    FetchVcard,
+    AddContact {
+        jid: String,
+    },
+    SendPresenceDirected {
+        to: String,
+        pres_type: String,
+    },
+    AcceptAndSubscribe {
+        jid: String,
+    },
     Disconnect,
 }
 
@@ -147,6 +161,7 @@ pub struct XmppManager {
     task_handle: Option<tokio::task::JoinHandle<()>>,
     connection_status: Arc<Mutex<ConnectionStatus>>,
     app_handle: Option<tauri::AppHandle>,
+    pending_subscriptions: Arc<Mutex<Vec<String>>>,
 }
 
 impl XmppManager {
@@ -161,6 +176,7 @@ impl XmppManager {
                 error: None,
             })),
             app_handle: None,
+            pending_subscriptions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -216,6 +232,8 @@ impl XmppManager {
         let status_arc = self.connection_status.clone();
         let own_jid = jid_str.clone();
 
+        let pending_subs_arc = self.pending_subscriptions.clone();
+
         // Spawn the background event loop
         let handle = tokio::spawn(xmpp_event_loop(
             client,
@@ -224,6 +242,7 @@ impl XmppManager {
             status_arc,
             own_jid,
             Some(auth_tx),
+            pending_subs_arc,
         ));
 
         self.sender = Some(tx);
@@ -309,17 +328,15 @@ impl XmppManager {
                 return Err("Not connected to XMPP server".to_string());
             }
         }
-        // Phase C will implement roster IQ; for now emit the event to keep compatibility
-        if let Some(ref app_handle) = self.app_handle {
-            app_handle
-                .emit_all("xmpp_contact_added", &jid)
-                .map_err(|e| format!("Failed to emit contact added event: {}", e))?;
-        }
-        Ok(())
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::AddContact { jid })
+            .await
+            .map_err(|e| format!("Failed to queue add contact: {}", e))
     }
 
-    pub async fn set_vcard_nickname(&self, nickname: String) -> Result<(), String> {
-        info!("Queueing vCard nickname update: {}", nickname);
+    pub async fn fetch_vcard(&self) -> Result<(), String> {
+        info!("Queueing vCard fetch");
         {
             let status = self.connection_status.lock().await;
             if !status.connected {
@@ -328,7 +345,63 @@ impl XmppManager {
         }
         let sender = self.sender.as_ref().ok_or("Not connected")?;
         sender
-            .send(OutgoingCmd::SetVcardNickname(nickname))
+            .send(OutgoingCmd::FetchVcard)
+            .await
+            .map_err(|e| format!("Failed to queue vCard fetch: {}", e))
+    }
+
+    pub async fn accept_subscription(&self, jid: String) -> Result<(), String> {
+        info!("Accepting subscription from {}", jid);
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        self.pending_subscriptions
+            .lock()
+            .await
+            .retain(|j| j != &jid);
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::AcceptAndSubscribe { jid })
+            .await
+            .map_err(|e| format!("Failed to queue subscription accept: {}", e))
+    }
+
+    pub async fn deny_subscription(&self, jid: String) -> Result<(), String> {
+        info!("Denying subscription from {}", jid);
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        self.pending_subscriptions
+            .lock()
+            .await
+            .retain(|j| j != &jid);
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::SendPresenceDirected {
+                to: jid,
+                pres_type: "unsubscribed".to_string(),
+            })
+            .await
+            .map_err(|e| format!("Failed to queue subscription deny: {}", e))
+    }
+
+    pub async fn set_vcard(&self, nickname: String, desc: String) -> Result<(), String> {
+        info!("Queueing vCard update: nickname='{}'", nickname);
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::SetVcard { nickname, desc })
             .await
             .map_err(|e| format!("Failed to queue vCard update: {}", e))
     }
@@ -364,6 +437,11 @@ impl XmppManager {
         Ok(())
     }
 
+    pub async fn drain_pending_subscriptions(&self) -> Vec<String> {
+        let mut subs = self.pending_subscriptions.lock().await;
+        subs.drain(..).collect()
+    }
+
     pub async fn is_connected(&self) -> bool {
         self.connection_status.lock().await.connected
     }
@@ -377,6 +455,16 @@ impl XmppManager {
     }
 }
 
+fn subscription_str(s: &Subscription) -> &'static str {
+    match s {
+        Subscription::Both => "both",
+        Subscription::From => "from",
+        Subscription::To => "to",
+        Subscription::Remove => "remove",
+        Subscription::None => "none",
+    }
+}
+
 async fn xmpp_event_loop(
     mut client: tokio_xmpp::Client,
     mut rx: mpsc::Receiver<OutgoingCmd>,
@@ -384,6 +472,7 @@ async fn xmpp_event_loop(
     status: Arc<Mutex<ConnectionStatus>>,
     own_jid: String,
     mut auth_result: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    pending_subscriptions: Arc<Mutex<Vec<String>>>,
 ) {
     loop {
         tokio::select! {
@@ -447,6 +536,24 @@ async fn xmpp_event_loop(
                         }
                     }
                     Some(Event::Stanza(Stanza::Presence(pres))) => {
+                        // Handle incoming subscription requests
+                        if pres.type_ == PresenceType::Subscribe {
+                            let from_jid = pres.from.map(|j| j.to_string()).unwrap_or_default();
+                            if !from_jid.is_empty() {
+                                // Buffer for later retrieval (handles race with frontend mount)
+                                {
+                                    let mut subs = pending_subscriptions.lock().await;
+                                    if !subs.contains(&from_jid) {
+                                        subs.push(from_jid.clone());
+                                    }
+                                }
+                                let payload = serde_json::json!({ "from_jid": from_jid });
+                                if let Err(e) = app_handle.emit_all("xmpp_subscription_request", &payload) {
+                                    error!("Failed to emit xmpp_subscription_request: {}", e);
+                                }
+                            }
+                            continue;
+                        }
                         // Phase D: handle contact presence updates
                         let availability = match &pres.type_ {
                             PresenceType::None => Some(match &pres.show {
@@ -472,15 +579,33 @@ async fn xmpp_event_loop(
                         }
                     }
                     Some(Event::Stanza(Stanza::Iq(iq))) => {
-                        // Phase C: handle roster IQ result
-                        if let XmppIq::Result { payload: Some(elem), .. } = iq {
-                            match Roster::try_from(elem) {
-                                Ok(roster) => {
+                        match iq {
+                            XmppIq::Result { payload: Some(elem), .. } => {
+                                if elem.name() == "vCard" && elem.ns() == "vcard-temp" {
+                                    let nickname = elem
+                                        .get_child("NICKNAME", "vcard-temp")
+                                        .and_then(|n| n.texts().next())
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_default();
+                                    let flavour_text = elem
+                                        .get_child("DESC", "vcard-temp")
+                                        .and_then(|n| n.texts().next())
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_default();
+                                    let payload = serde_json::json!({
+                                        "nickname": nickname,
+                                        "flavour_text": flavour_text,
+                                    });
+                                    info!("vCard received: nickname='{}', desc='{}'", nickname, flavour_text);
+                                    if let Err(e) = app_handle.emit_all("xmpp_vcard_received", &payload) {
+                                        error!("Failed to emit xmpp_vcard_received: {}", e);
+                                    }
+                                } else if let Ok(roster) = Roster::try_from(elem) {
                                     let contacts: Vec<serde_json::Value> = roster.items.iter().map(|item| {
                                         serde_json::json!({
                                             "jid": item.jid.to_string(),
                                             "name": item.name.as_deref().unwrap_or(""),
-                                            "subscription": format!("{:?}", item.subscription),
+                                            "subscription": subscription_str(&item.subscription),
                                         })
                                     }).collect();
                                     info!("Roster received with {} contacts", contacts.len());
@@ -488,10 +613,33 @@ async fn xmpp_event_loop(
                                         error!("Failed to emit xmpp_roster_received: {}", e);
                                     }
                                 }
-                                Err(e) => {
-                                    warn!("Failed to parse roster IQ response: {}", e);
+                            }
+                            // Roster push from server (subscription state changes, new contacts)
+                            XmppIq::Set { id, payload, .. } => {
+                                // Must acknowledge the push
+                                let ack = XmppIq::Result {
+                                    from: None,
+                                    to: None,
+                                    id,
+                                    payload: None::<MinidomElement>,
+                                };
+                                if let Err(e) = client.send_stanza(Stanza::Iq(ack)).await {
+                                    error!("Failed to ack roster push: {}", e);
+                                }
+                                if let Ok(roster) = Roster::try_from(payload) {
+                                    for item in &roster.items {
+                                        let push = serde_json::json!({
+                                            "jid": item.jid.to_string(),
+                                            "name": item.name.as_deref().unwrap_or(""),
+                                            "subscription": subscription_str(&item.subscription),
+                                        });
+                                        if let Err(e) = app_handle.emit_all("xmpp_roster_push", &push) {
+                                            error!("Failed to emit xmpp_roster_push: {}", e);
+                                        }
+                                    }
                                 }
                             }
+                            _ => {}
                         }
                     }
                     Some(Event::Disconnected(err)) => {
@@ -555,15 +703,22 @@ async fn xmpp_event_loop(
                             error!("Failed to send presence stanza: {}", e);
                         }
                     }
-                    Some(OutgoingCmd::SetVcardNickname(nickname)) => {
+                    Some(OutgoingCmd::SetVcard { nickname, desc }) => {
                         let vcard_ns = "vcard-temp";
-                        let vcard_el = MinidomElement::builder("vCard", vcard_ns)
+                        let mut vcard_builder = MinidomElement::builder("vCard", vcard_ns)
                             .append(
                                 MinidomElement::builder("NICKNAME", vcard_ns)
                                     .append(minidom::Node::Text(nickname))
                                     .build()
-                            )
-                            .build();
+                            );
+                        if !desc.is_empty() {
+                            vcard_builder = vcard_builder.append(
+                                MinidomElement::builder("DESC", vcard_ns)
+                                    .append(minidom::Node::Text(desc))
+                                    .build()
+                            );
+                        }
+                        let vcard_el = vcard_builder.build();
                         let iq = XmppIq::Set {
                             from: None,
                             to: None,
@@ -571,7 +726,111 @@ async fn xmpp_event_loop(
                             payload: vcard_el,
                         };
                         if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
-                            error!("Failed to send vCard nickname IQ: {}", e);
+                            error!("Failed to send vCard set IQ: {}", e);
+                        }
+                    }
+                    Some(OutgoingCmd::FetchVcard) => {
+                        let vcard_ns = "vcard-temp";
+                        let vcard_el = MinidomElement::builder("vCard", vcard_ns).build();
+                        let iq = XmppIq::Get {
+                            from: None,
+                            to: None,
+                            id: uuid::Uuid::new_v4().to_string(),
+                            payload: vcard_el,
+                        };
+                        if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
+                            error!("Failed to send vCard fetch IQ: {}", e);
+                        }
+                    }
+                    Some(OutgoingCmd::AcceptAndSubscribe { jid }) => {
+                        match jid.parse::<jid::BareJid>() {
+                            Ok(contact_jid) => {
+                                // 1. Tell them we accepted their subscription
+                                let mut subscribed_pres = Presence::new(PresenceType::Subscribed);
+                                subscribed_pres.to = Some(jid::Jid::from(contact_jid.clone()));
+                                if let Err(e) = client.send_stanza(Stanza::Presence(subscribed_pres)).await {
+                                    error!("Failed to send subscribed presence: {}", e);
+                                }
+                                // 2. Add them to our roster
+                                let item = RosterItem {
+                                    jid: contact_jid.clone(),
+                                    name: None,
+                                    subscription: Subscription::None,
+                                    ask: Ask::None,
+                                    groups: vec![],
+                                };
+                                let roster_set = Roster { ver: None, items: vec![item] };
+                                let set_iq = XmppIq::Set {
+                                    from: None,
+                                    to: None,
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    payload: roster_set.into(),
+                                };
+                                if let Err(e) = client.send_stanza(Stanza::Iq(set_iq)).await {
+                                    error!("Failed to send roster set on accept: {}", e);
+                                }
+                                // 3. Subscribe back (so we see their presence too)
+                                let mut sub_pres = Presence::new(PresenceType::Subscribe);
+                                sub_pres.to = Some(jid::Jid::from(contact_jid));
+                                if let Err(e) = client.send_stanza(Stanza::Presence(sub_pres)).await {
+                                    error!("Failed to send subscribe presence on accept: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Invalid JID '{}' for AcceptAndSubscribe: {}", jid, e);
+                            }
+                        }
+                    }
+                    Some(OutgoingCmd::AddContact { jid }) => {
+                        match jid.parse::<jid::BareJid>() {
+                            Ok(contact_jid) => {
+                                let item = RosterItem {
+                                    jid: contact_jid.clone(),
+                                    name: None,
+                                    subscription: Subscription::None,
+                                    ask: Ask::None,
+                                    groups: vec![],
+                                };
+                                let roster_set = Roster { ver: None, items: vec![item] };
+                                let set_iq = XmppIq::Set {
+                                    from: None,
+                                    to: None,
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    payload: roster_set.into(),
+                                };
+                                if let Err(e) = client.send_stanza(Stanza::Iq(set_iq)).await {
+                                    error!("Failed to send roster set IQ: {}", e);
+                                }
+                                // Send subscribe presence to contact
+                                let mut sub_pres = Presence::new(PresenceType::Subscribe);
+                                sub_pres.to = Some(jid::Jid::from(contact_jid));
+                                if let Err(e) = client.send_stanza(Stanza::Presence(sub_pres)).await {
+                                    error!("Failed to send subscribe presence: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Invalid contact JID '{}': {}", jid, e);
+                            }
+                        }
+                    }
+                    Some(OutgoingCmd::SendPresenceDirected { to, pres_type }) => {
+                        let ptype = match pres_type.as_str() {
+                            "subscribed" => PresenceType::Subscribed,
+                            "unsubscribed" => PresenceType::Unsubscribed,
+                            "subscribe" => PresenceType::Subscribe,
+                            _ => PresenceType::None,
+                        };
+                        match to.parse::<jid::BareJid>() {
+                            Ok(target_jid) => {
+                                let mut pres = Presence::new(ptype);
+                                pres.to = Some(jid::Jid::from(target_jid));
+                                if let Err(e) = client.send_stanza(Stanza::Presence(pres)).await {
+                                    error!("Failed to send directed presence: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Invalid JID '{}' for directed presence: {}", to, e);
+                            }
                         }
                     }
                     Some(OutgoingCmd::Disconnect) | None => {

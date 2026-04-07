@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::web_sys::HtmlInputElement;
 use leptos_router::components::A;
+use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -19,6 +20,16 @@ use super::models;
 use models::{
     Availability, Friend, UpdateAvailabilityArgs, UpdateFlavourTextArgs, UpdateUsernameArgs, User,
 };
+
+#[derive(Serialize, Deserialize)]
+struct AddContactArgs {
+    jid: String,
+}
+
+#[derive(Serialize)]
+struct SubscriptionArgs {
+    jid: String,
+}
 
 #[component]
 pub fn MainPage() -> impl IntoView {
@@ -44,6 +55,30 @@ pub fn MainPage() -> impl IntoView {
 
     let set_friends =
         use_context::<WriteSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No set friends context");
+
+    let (add_friend_jid, set_add_friend_jid) = signal(String::new());
+    let (add_friend_status, set_add_friend_status) = signal(Option::<String>::None);
+    let (pending_requests, set_pending_requests) = signal(Vec::<String>::new());
+
+    let add_friend = move |_| {
+        let jid = add_friend_jid.get_untracked().trim().to_string();
+        if jid.is_empty() {
+            return;
+        }
+        set_add_friend_status.set(Some("Sending request...".to_string()));
+        spawn_local(async move {
+            match invoke_catching("xmpp_add_contact", to_value(&AddContactArgs { jid: jid.clone() }).unwrap()).await {
+                Ok(_) => {
+                    set_add_friend_status.set(Some(format!("Friend request sent to {}", jid)));
+                    set_add_friend_jid.set(String::new());
+                }
+                Err(e) => {
+                    let msg = format!("Error: {:?}", e);
+                    set_add_friend_status.set(Some(msg));
+                }
+            }
+        });
+    };
 
     // Check XMPP connection status on page load
     {
@@ -71,10 +106,33 @@ pub fn MainPage() -> impl IntoView {
         });
     }
 
+    // Fetch any subscription requests that arrived before this page mounted
+    {
+        spawn_local(async move {
+            let result = invoke(
+                "get_pending_subscriptions",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
+            if let Ok(jids) = from_value::<Vec<String>>(result) {
+                if !jids.is_empty() {
+                    set_pending_requests.update(|reqs| {
+                        for jid in jids {
+                            if !reqs.contains(&jid) {
+                                reqs.push(jid);
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    }
+
     // Set up XMPP event listeners
     {
         let set_connection_status = set_connection_status;
         let set_friends = set_friends;
+        let set_pending_requests = set_pending_requests;
         spawn_local(async move {
             // Import Tauri's event listening capability
             #[wasm_bindgen]
@@ -129,9 +187,9 @@ pub fn MainPage() -> impl IntoView {
                                     });
                                 }
                             }
-                            // Sort both lists by email (matches backend sort)
-                            online.sort_by(|a, b| a.email.cmp(&b.email));
-                            offline.sort_by(|a, b| a.email.cmp(&b.email));
+                            // Sort both lists A→Z by display name
+                            online.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            offline.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                             set_friends.set((online, offline));
                         }
                     }
@@ -174,8 +232,8 @@ pub fn MainPage() -> impl IntoView {
                                     online.push(f);
                                 }
                             }
-                            online.sort_by(|a, b| a.email.cmp(&b.email));
-                            offline.sort_by(|a, b| a.email.cmp(&b.email));
+                            online.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            offline.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         });
                     }
                 }
@@ -203,10 +261,80 @@ pub fn MainPage() -> impl IntoView {
             )
             .await;
 
+            // Listen for incoming subscription requests (pending friend requests)
+            let subscription_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
+                let set_pending_requests = set_pending_requests;
+                move |raw: JsValue| {
+                    if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
+                        let from_jid = envelope["payload"]["from_jid"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string();
+                        if !from_jid.is_empty() {
+                            set_pending_requests.update(|reqs| {
+                                if !reqs.contains(&from_jid) {
+                                    reqs.push(from_jid);
+                                }
+                            });
+                        }
+                    }
+                }
+            }) as Box<dyn Fn(JsValue)>);
+            let _ = listen(
+                "xmpp_subscription_request",
+                subscription_callback.as_ref().unchecked_ref(),
+            )
+            .await;
+
+            // Listen for roster push (contact added / subscription state changed)
+            let roster_push_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
+                let set_friends = set_friends;
+                move |raw: JsValue| {
+                    if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
+                        let payload = &envelope["payload"];
+                        let jid = payload["jid"].as_str().unwrap_or("").to_string();
+                        let name_raw = payload["name"].as_str().unwrap_or("").to_string();
+                        let sub = payload["subscription"].as_str().unwrap_or("").to_string();
+                        if jid.is_empty() {
+                            return;
+                        }
+                        let name = if name_raw.is_empty() {
+                            jid.split('@').next().unwrap_or(&jid).to_string()
+                        } else {
+                            name_raw
+                        };
+                        if sub == "both" || sub == "from" || sub == "to" {
+                            set_friends.update(|(online, offline)| {
+                                let exists = online.iter().any(|f| f.email == jid)
+                                    || offline.iter().any(|f| f.email == jid);
+                                if !exists {
+                                    offline.push(Friend {
+                                        name,
+                                        email: jid,
+                                        flavour_text: String::new(),
+                                        availability: Availability::Offline,
+                                    });
+                                    offline.sort_by(|a, b| {
+                                        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                    });
+                                }
+                            });
+                        }
+                    }
+                }
+            }) as Box<dyn Fn(JsValue)>);
+            let _ = listen(
+                "xmpp_roster_push",
+                roster_push_callback.as_ref().unchecked_ref(),
+            )
+            .await;
+
             connected_callback.forget();
             disconnected_callback.forget();
             roster_callback.forget();
             presence_callback.forget();
+            subscription_callback.forget();
+            roster_push_callback.forget();
         });
     }
 
@@ -482,18 +610,100 @@ pub fn MainPage() -> impl IntoView {
                     </div>
                 </div>
             </header>
-            <div id="find-friends" class="mt-1 mb-1 bg-white border-1b pd-block-5 pd-inline-2">
-                <span class="mr-1">"👤"</span>
+            <div id="find-friends" class="mt-1 mb-1 bg-white border-1b">
                 <input
                     type="text"
                     id="find-friend_input"
                     placeholder="Find a friend"
                     class="border-1b"
+                    prop:value=move || add_friend_jid.get()
+                    on:input=move |ev| set_add_friend_jid.set(event_target_value(&ev))
+                    on:keydown=move |ev: KeyboardEvent| {
+                        if ev.key() == "Enter" {
+                            ev.prevent_default();
+                            let jid = add_friend_jid.get_untracked().trim().to_string();
+                            if jid.is_empty() { return; }
+                            set_add_friend_status.set(Some("Sending request...".to_string()));
+                            spawn_local(async move {
+                                match invoke_catching("xmpp_add_contact", to_value(&AddContactArgs { jid: jid.clone() }).unwrap()).await {
+                                    Ok(_) => {
+                                        set_add_friend_status.set(Some(format!("Friend request sent to {}", jid)));
+                                        set_add_friend_jid.set(String::new());
+                                    }
+                                    Err(e) => set_add_friend_status.set(Some(format!("Error: {:?}", e))),
+                                }
+                            });
+                        }
+                    }
                 />
-                <span>"➕"</span>
+                <button on:click=add_friend title="Add friend">"➕"</button>
+                {move || add_friend_status.get().map(|s| view! { <span class="add-friend-status">{s}</span> })}
             </div>
             <div id="friends-container" class="flex-col flex-grow p-10 bg-white auto-y">
-                <span class="bold">"🔽 Friends"</span>
+                // Pending friend requests section (styled like Friends/Offline groups)
+                <Show when=move || !pending_requests.get().is_empty()>
+                    <span class="bold">
+                        "📩 Pending"
+                        <span class="group-count">
+                            {move || format!(" ({})", pending_requests.get().len())}
+                        </span>
+                    </span>
+                    <ul class="contact-list" id="pending-list">
+                        <For
+                            each=move || pending_requests.get()
+                            key=|jid| jid.clone()
+                            children=move |jid| {
+                                let jid_accept = jid.clone();
+                                let jid_deny = jid.clone();
+                                let set_pending_requests = set_pending_requests;
+                                let display_name = jid.split('@').next().unwrap_or(&jid).to_string();
+                                view! {
+                                    <li class="pending-item">
+                                        <span class="pending-avatar">"👤"</span>
+                                        <span class="pending-jid">{display_name}</span>
+                                        <button
+                                            class="pending-accept"
+                                            title="Accept"
+                                            on:click=move |_| {
+                                                let jid = jid_accept.clone();
+                                                let set_pending_requests = set_pending_requests;
+                                                spawn_local(async move {
+                                                    let _ = invoke_catching(
+                                                        "xmpp_accept_subscription",
+                                                        to_value(&SubscriptionArgs { jid: jid.clone() }).unwrap(),
+                                                    )
+                                                    .await;
+                                                    set_pending_requests.update(|reqs| reqs.retain(|j| j != &jid));
+                                                });
+                                            }
+                                        >
+                                            "✔"
+                                        </button>
+                                        <button
+                                            class="pending-deny"
+                                            title="Decline"
+                                            on:click=move |_| {
+                                                let jid = jid_deny.clone();
+                                                let set_pending_requests = set_pending_requests;
+                                                spawn_local(async move {
+                                                    let _ = invoke_catching(
+                                                        "xmpp_deny_subscription",
+                                                        to_value(&SubscriptionArgs { jid: jid.clone() }).unwrap(),
+                                                    )
+                                                    .await;
+                                                    set_pending_requests.update(|reqs| reqs.retain(|j| j != &jid));
+                                                });
+                                            }
+                                        >
+                                            "✘"
+                                        </button>
+                                    </li>
+                                }
+                            }
+                        />
+                    </ul>
+                </Show>
+                <span class="group-header bold">"Friends"</span>
                 <ul id="online-list">
                     <For
                         each=move || online_friends()
@@ -514,7 +724,7 @@ pub fn MainPage() -> impl IntoView {
                         }
                     />
                 </ul>
-                <span class="mt-1 bold">"🔽 Offline"</span>
+                <span class="group-header mt-1 bold">"Offline"</span>
                 <ul id="offline-list">
                     <For
                         each=move || offline_friends()

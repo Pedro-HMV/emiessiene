@@ -106,6 +106,54 @@ if ($regResult -match "already registered") {
     Write-Host "  $regResult" -ForegroundColor Gray
 }
 
+# --- Create friend accounts (password: password123) ---
+Write-Host ""
+Write-Host "Creating friend accounts..." -ForegroundColor Cyan
+
+$friendAccounts = @(
+    @{ user = "juniorbcm";       name = "Death Scyther" },
+    @{ user = "giovanni_p";      name = "Burega The King" },
+    @{ user = "galaxyblues";     name = "Sawamura Shido" },
+    @{ user = "ivokds";          name = "Kushirenada" },
+    @{ user = "ishiro_oninawa";  name = "Ishiro Oninawa" },
+    @{ user = "igorcds";         name = "Oniguma" },
+    @{ user = "rafaelsbz";       name = "Fael" },
+    @{ user = "kampelo";         name = "Kampelo" },
+    @{ user = "sancho_p";        name = "Sancho" },
+    @{ user = "mateusbrigido";   name = "Hanatarou" },
+    @{ user = "funboy";          name = "Fun Boy" },
+    @{ user = "anderson";        name = "Anderson" },
+    @{ user = "netokbca";        name = "Kbca" },
+    @{ user = "abrupt";          name = "Abrupt Chemical Mind" },
+    @{ user = "kkxi";            name = "Kakashi Sahringam" },
+    @{ user = "benjin";          name = "Benji Maden" },
+    @{ user = "mastrangelo";     name = "V.A.M." },
+    @{ user = "sephirothx";      name = "SephirothX" },
+    @{ user = "thelast";         name = "The Last" },
+    @{ user = "teresaarg";       name = "Undomiel Pastel" },
+    @{ user = "ayres";           name = "Bloody George" },
+    @{ user = "giuliano";        name = "Giuliano" },
+    @{ user = "msoares";         name = "Marcelo" },
+    @{ user = "anandaomati";     name = "Ananda" },
+    @{ user = "relouin";         name = "Relouin" },
+    @{ user = "aav";             name = "Abel" },
+    @{ user = "lav";             name = "Luna" },
+    @{ user = "perhaps";         name = "Deborah" },
+    @{ user = "lary_zv";         name = "Laryssa" },
+    @{ user = "l_over";          name = "Mandy" }
+)
+
+foreach ($acct in $friendAccounts) {
+    $r = docker exec $containerName ejabberdctl register $acct.user localhost password123 2>&1
+    if ($r -match "already registered") {
+        Write-Host "  $($acct.user)@localhost already exists." -ForegroundColor Gray
+    } elseif ($r -match "successfully registered") {
+        Write-Host "  Created: $($acct.user)@localhost  ($($acct.name))" -ForegroundColor Green
+    } else {
+        Write-Host "  $($acct.user): $r" -ForegroundColor Yellow
+    }
+}
+
 # --- Summary ---
 Write-Host ""
 Write-Host "====================================================" -ForegroundColor Green

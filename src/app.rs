@@ -39,25 +39,6 @@ pub fn App() -> impl IntoView {
     // Global message store: bare JID → conversation history (capped at 200 messages each)
     let messages: RwSignal<MessageStore> = RwSignal::new(HashMap::new());
 
-    let user_resource = LocalResource::new(|| async {
-        let info = invoke("get_user", JsValue::null()).await;
-        from_value::<User>(info).expect("Failed to parse user info")
-    });
-
-    let friends_resource = LocalResource::new(|| async {
-        let info = invoke("get_friends", JsValue::null()).await;
-        from_value::<(Vec<Friend>, Vec<Friend>)>(info).expect("Failed to parse friends info")
-    });
-
-    Effect::new(move |_| {
-        if let Some(updated_user) = user_resource.get() {
-            set_user.set(updated_user);
-        }
-        if let Some(updated_friends) = friends_resource.get() {
-            set_friends.set(updated_friends);
-        }
-    });
-
     // Single global listener for all incoming XMPP messages.
     // Fixes: wrong payload path (event.payload.* not event.*), full-JID bare-JID mismatch,
     // and messages appearing in all open chat tabs instead of just the right one.
@@ -67,25 +48,14 @@ pub fn App() -> impl IntoView {
             let callback = Closure::wrap(Box::new(move |raw: JsValue| {
                 // Tauri wraps events as: { event: "...", payload: { ... }, id: ... }
                 if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
-                    leptos::logging::log!("[xmpp_message_received] raw envelope: {:?}", envelope);
                     let payload = &envelope["payload"];
                     let from_full = payload["from"].as_str().unwrap_or("").to_string();
-                    let to_full = payload["to"].as_str().unwrap_or("").to_string();
-                    let msg_type = payload["message_type"].as_str().unwrap_or("").to_string();
-                    let body_raw = payload["body"].as_str().unwrap_or("").to_string();
-
-                    leptos::logging::log!(
-                        "[xmpp_message_received] from={:?} to={:?} type={:?} body={:?} own_jid={:?}",
-                        from_full, to_full, msg_type, body_raw,
-                        user.get_untracked().email
-                    );
-
                     let body = match payload["body"].as_str() {
                         Some(b) if !b.is_empty() => b.to_string(),
-                        _ => return, // ignore empty-body presence stanzas etc.
+                        _ => return,
                     };
 
-                    // Strip resource to get bare JID: "alice@localhost/Resource" → "alice@localhost"
+                    // Strip resource to get bare JID
                     let bare_jid = from_full
                         .split('/')
                         .next()
@@ -95,15 +65,8 @@ pub fn App() -> impl IntoView {
                     // Skip echo of own messages — already added optimistically on send
                     let own_jid = user.get_untracked().email;
                     if bare_jid == own_jid {
-                        leptos::logging::log!("[xmpp_message_received] suppressed (own echo)");
                         return;
                     }
-
-                    leptos::logging::log!(
-                        "[xmpp_message_received] ACCEPTING — bare_jid={:?} != own_jid={:?}",
-                        bare_jid,
-                        own_jid
-                    );
 
                     let timestamp = payload["timestamp"].as_str().unwrap_or("").to_string();
 

@@ -44,6 +44,44 @@ a:hover {
   max-height: calc(100vh - 192px);
 }
 
+#find-friends {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-block: 3px;
+  padding-inline: 6px;
+}
+
+#find-friends input {
+  flex: 1;
+  padding: 2px 4px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+#find-friends button {
+  flex-shrink: 0;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  cursor: default;
+  user-select: none;
+}
+
+.group-header::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid #444;
+  margin-right: 5px;
+  flex-shrink: 0;
+}
+
 .vh-100 {
   height: 100vh;
 }
@@ -1055,4 +1093,118 @@ button {
 
 .login-link a:hover {
   text-decoration: underline;
+}
+/* ========================
+   Login Page
+   ======================== */
+#login_container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 32px);
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+#login_title {
+  font-size: 32px;
+  font-weight: bold;
+  margin-bottom: 8px;
+  letter-spacing: 4px;
+}
+
+#login_avatar {
+  margin-bottom: 16px;
+}
+
+#login_form {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 340px;
+  gap: 8px;
+}
+
+#login_form input[type="text"],
+#login_form input[type="password"] {
+  width: 100%;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  font-size: 14px;
+}
+
+#login_form select {
+  font-size: 14px;
+  padding: 4px 6px;
+}
+
+#login_submit {
+  align-self: center;
+  padding: 8px 40px;
+  margin-top: 4px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+/* ── Pending group ───────────────────────────────────────────── */
+.contact-list {
+  list-style-type: none;
+  margin: 0;
+  padding: 0;
+}
+
+.group-count {
+  font-weight: normal;
+  color: #666;
+}
+
+#pending-list .pending-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  font-size: 13px;
+}
+
+.pending-avatar {
+  flex-shrink: 0;
+}
+
+.pending-jid {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 4px;
+}
+
+.pending-accept,
+.pending-deny {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid;
+  line-height: 1.4;
+}
+
+.pending-accept {
+  background: #e8f5e9;
+  border-color: #66bb6a;
+  color: #2e7d32;
+}
+
+.pending-accept:hover {
+  background: #c8e6c9;
+}
+
+.pending-deny {
+  background: #fce4ec;
+  border-color: #ef9a9a;
+  color: #b71c1c;
+}
+
+.pending-deny:hover {
+  background: #f8bbd0;
 }

@@ -21,8 +21,13 @@ struct XmppConnectArgs {
 }
 
 #[derive(Serialize)]
-struct SaveJidArgs {
+struct SaveLoginPrefsArgs {
     jid: String,
+    #[serde(rename = "rememberMe")]
+    remember_me: bool,
+    #[serde(rename = "autoSignIn")]
+    auto_sign_in: bool,
+    availability: String,
 }
 
 #[component]
@@ -53,13 +58,22 @@ pub fn LoginPage() -> impl IntoView {
         }
     });
 
-    // Pre-fill JID from last remembered login (only needs the jid field)
+    // Pre-fill form from last remembered login and restore checkbox state
     spawn_local(async move {
         if let Ok(result) = invoke_catching("get_saved_profile", JsValue::null()).await {
             if let Ok(profile) = from_value::<SavedProfile>(result) {
                 if !profile.jid.is_empty() {
                     set_username.set(profile.jid);
                 }
+                set_remember_me.set(profile.remember_me);
+                set_auto_sign_in.set(profile.auto_sign_in);
+                let avail = match profile.last_availability.as_str() {
+                    "Away" => Availability::Away,
+                    "Busy" => Availability::Busy,
+                    "Offline" => Availability::Offline,
+                    _ => Availability::Online,
+                };
+                set_availability.set(avail);
             }
         }
     });
@@ -74,7 +88,8 @@ pub fn LoginPage() -> impl IntoView {
         });
     };
 
-    let handle_sign_in = {
+    // Shared sign-in logic extracted so it can be called from button click AND Enter key
+    let do_sign_in = {
         let username = username;
         let password = password;
         let availability = availability;
@@ -82,10 +97,11 @@ pub fn LoginPage() -> impl IntoView {
         let set_error_message = set_error_message;
         let set_is_loading = set_is_loading;
         let set_should_navigate = set_should_navigate;
+        let set_fatal_error = set_fatal_error;
+        let remember_me = remember_me;
+        let auto_sign_in = auto_sign_in;
 
-        move |ev: leptos::ev::MouseEvent| {
-            ev.prevent_default();
-
+        move || {
             // Clear any previous error messages
             set_error_message.set(String::new());
 
@@ -103,29 +119,23 @@ pub fn LoginPage() -> impl IntoView {
             // Set loading state
             set_is_loading.set(true);
 
-            // Clone values for the async block
             let jid = if username.get().trim().contains('@') {
-                // If already an email, use as-is
                 username.get().trim().to_string()
             } else {
-                // If just username, append domain
                 format!("{}@nto.local", username.get().trim())
             };
             let password_value = password.get().clone();
             let availability_value = availability.get().clone();
-            let _username_value = username.get().clone();
+            let remember_me_captured = remember_me.get();
+            let auto_sign_in_captured = auto_sign_in.get();
 
-            // Clone the signals for the async block
             let set_user = set_user;
             let set_error_message = set_error_message;
             let set_is_loading = set_is_loading;
             let set_should_navigate = set_should_navigate;
             let set_fatal_error = set_fatal_error;
-            let remember_me_captured = remember_me.get();
 
-            // Spawn async task for XMPP connection
             spawn_local(async move {
-                // Create arguments for Tauri command using struct
                 let connect_args = XmppConnectArgs {
                     jid: jid.clone(),
                     password: password_value.clone(),
@@ -144,50 +154,90 @@ pub fn LoginPage() -> impl IntoView {
                         match from_value::<serde_json::Value>(result) {
                             Ok(response) => {
                                 if response["success"].as_bool().unwrap_or(false) {
-                                    // XMPP connection successful
                                     log::info!("XMPP connection successful for {}", jid);
 
-                                    // Load saved profile now (inside the same async task — no race condition)
-                                    let profile =
-                                        invoke_catching("get_saved_profile", JsValue::null())
-                                            .await
-                                            .ok()
-                                            .and_then(|v| from_value::<SavedProfile>(v).ok());
-
-                                    let display_name = profile
-                                        .as_ref()
-                                        .filter(|p| !p.nickname.is_empty())
-                                        .map(|p| p.nickname.clone())
-                                        .unwrap_or_else(|| {
-                                            jid.split('@').next().unwrap_or(&jid).to_string()
-                                        });
-
-                                    let restored_ft =
-                                        profile.map(|p| p.flavour_text).unwrap_or_default();
-
-                                    // Update global user context
+                                    // Set user initial state — name defaults to JID local-part;
+                                    // the xmpp_vcard_received listener will update it once vCard arrives
+                                    let local_part =
+                                        jid.split('@').next().unwrap_or(&jid).to_string();
                                     set_user.update(|user| {
                                         user.email = jid.clone();
-                                        user.name = display_name;
+                                        user.name = local_part;
                                         user.availability = availability_value.clone();
-                                        user.flavour_text = restored_ft;
+                                        user.flavour_text = String::new();
                                     });
 
-                                    // Save JID for remember me
-                                    if remember_me_captured {
-                                        if let Ok(args) =
-                                            to_value(&SaveJidArgs { jid: jid.clone() })
-                                        {
-                                            let _ = invoke_catching("save_jid", args).await;
-                                        }
+                                    // Save login prefs (JID only stored if remember_me is true)
+                                    let avail_str = match availability_value {
+                                        Availability::Away => "Away",
+                                        Availability::Busy => "Busy",
+                                        Availability::Offline => "Offline",
+                                        Availability::Online => "Online",
+                                    };
+                                    if let Ok(args) = to_value(&SaveLoginPrefsArgs {
+                                        jid: jid.clone(),
+                                        remember_me: remember_me_captured,
+                                        auto_sign_in: auto_sign_in_captured,
+                                        availability: avail_str.to_string(),
+                                    }) {
+                                        let _ = invoke_catching("save_login_prefs", args).await;
                                     }
 
-                                    // Navigate to main page
-                                    // (initial presence is sent automatically by the backend on Event::Online)
+                                    // Listen for vCard response and update user name/flavour_text
+                                    {
+                                        #[wasm_bindgen]
+                                        extern "C" {
+                                            #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
+                                            async fn listen(
+                                                event: &str,
+                                                callback: &js_sys::Function,
+                                            ) -> JsValue;
+                                        }
+                                        let set_user_vcard = set_user;
+                                        let vcard_cb = wasm_bindgen::closure::Closure::wrap(
+                                            Box::new(move |raw: JsValue| {
+                                                if let Ok(envelope) =
+                                                    from_value::<serde_json::Value>(raw)
+                                                {
+                                                    let payload = &envelope["payload"];
+                                                    let nickname = payload["nickname"]
+                                                        .as_str()
+                                                        .unwrap_or("")
+                                                        .to_string();
+                                                    let ft = payload["flavour_text"]
+                                                        .as_str()
+                                                        .unwrap_or("")
+                                                        .to_string();
+                                                    set_user_vcard.update(|u| {
+                                                        if !nickname.is_empty() {
+                                                            u.name = nickname;
+                                                        }
+                                                        u.flavour_text = ft;
+                                                    });
+                                                }
+                                            })
+                                                as Box<dyn Fn(JsValue)>,
+                                        );
+                                        spawn_local(async move {
+                                            let _ = listen(
+                                                "xmpp_vcard_received",
+                                                vcard_cb.as_ref().unchecked_ref(),
+                                            )
+                                            .await;
+                                            vcard_cb.forget();
+                                        });
+                                    }
+
+                                    // Request vCard from server
+                                    let _ = invoke_catching(
+                                        "xmpp_fetch_vcard",
+                                        to_value(&serde_json::json!({})).unwrap(),
+                                    )
+                                    .await;
+
                                     set_is_loading.set(false);
                                     set_should_navigate.set(true);
                                 } else {
-                                    // XMPP connection failed
                                     let error_msg =
                                         response["error"].as_str().unwrap_or("Unknown error");
                                     log::error!("XMPP connection failed: {}", error_msg);
@@ -216,6 +266,34 @@ pub fn LoginPage() -> impl IntoView {
         }
     };
 
+    let handle_sign_in = {
+        let do_sign_in = do_sign_in.clone();
+        move |ev: leptos::ev::MouseEvent| {
+            ev.prevent_default();
+            do_sign_in();
+        }
+    };
+
+    let on_enter_username = {
+        let do_sign_in = do_sign_in.clone();
+        move |ev: leptos::ev::KeyboardEvent| {
+            if ev.key() == "Enter" {
+                ev.prevent_default();
+                do_sign_in();
+            }
+        }
+    };
+
+    let on_enter_password = {
+        let do_sign_in = do_sign_in.clone();
+        move |ev: leptos::ev::KeyboardEvent| {
+            if ev.key() == "Enter" {
+                ev.prevent_default();
+                do_sign_in();
+            }
+        }
+    };
+
     view! {
         <Show when=move || fatal_error.get().is_some()>
             <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:9999;">
@@ -239,20 +317,21 @@ pub fn LoginPage() -> impl IntoView {
                 </div>
             </div>
         </Show>
-        <div id="login_container" class="flex-col">
+        <div id="login_container">
             <div id="login_title">"NTO"</div>
             <div id="login_avatar">
                 <div id="login_avatar_img" style="width: 150px; height: 150px; background: black;">
                     a
                 </div>
             </div>
-            <form id="login_form" class="flex-col">
+            <form id="login_form">
                 <input
                     type="text"
                     id="login_username"
                     placeholder="Email (e.g., pedro@hotmail.com)"
                     prop:value=username
                     on:input=move |ev| set_username.set(event_target_value(&ev))
+                    on:keydown=on_enter_username
                 />
                 <input
                     type="password"
@@ -260,9 +339,9 @@ pub fn LoginPage() -> impl IntoView {
                     placeholder="Password"
                     prop:value=password
                     on:input=move |ev| set_password.set(event_target_value(&ev))
+                    on:keydown=on_enter_password
                 />
 
-                // Show error message if any
                 <div class="error-container" style="min-height: 20px; margin: 10px 0;">
                     {move || {
                         let error = error_message.get();
@@ -272,7 +351,6 @@ pub fn LoginPage() -> impl IntoView {
                             "color: red;"
                         };
                         let content = if error.is_empty() { String::new() } else { error };
-
                         view! {
                             <div class="error-message" style=display_style>
                                 {content}
@@ -282,7 +360,17 @@ pub fn LoginPage() -> impl IntoView {
                 </div>
 
                 <div>
-                    "Status: "<select id="login_availability" on:change=update_availability>
+                    "Status: "
+                    <select
+                        id="login_availability"
+                        prop:value=move || match availability.get() {
+                            Availability::Away => "Away",
+                            Availability::Busy => "Busy",
+                            Availability::Offline => "Offline",
+                            Availability::Online => "Online",
+                        }
+                        on:change=update_availability
+                    >
                         <option value="Online">Online</option>
                         <option value="Busy">Busy</option>
                         <option value="Away">Away</option>
@@ -294,7 +382,7 @@ pub fn LoginPage() -> impl IntoView {
                         <input
                             type="checkbox"
                             id="remember_me"
-                            checked=remember_me
+                            prop:checked=remember_me
                             on:change=move |ev| set_remember_me.set(event_target_checked(&ev))
                         />
                         "Remember me"
@@ -305,13 +393,18 @@ pub fn LoginPage() -> impl IntoView {
                         <input
                             type="checkbox"
                             id="auto_sign_in"
-                            checked=auto_sign_in
+                            prop:checked=auto_sign_in
                             on:change=move |ev| set_auto_sign_in.set(event_target_checked(&ev))
                         />
                         "Sign me in automatically"
                     </label>
                 </div>
-                <button type="button" on:click=handle_sign_in disabled=move || is_loading.get()>
+                <button
+                    type="button"
+                    id="login_submit"
+                    on:click=handle_sign_in
+                    disabled=move || is_loading.get()
+                >
                     {move || if is_loading.get() { "Connecting..." } else { "Sign In" }}
                 </button>
 

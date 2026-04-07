@@ -10,8 +10,9 @@ pub struct UpdateUsernameArgs<'a> {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct SavedProfile {
     pub jid: String,
-    pub nickname: String,
-    pub flavour_text: String,
+    pub remember_me: bool,
+    pub auto_sign_in: bool,
+    pub last_availability: String,
 }
 
 #[derive(Serialize, Deserialize)]

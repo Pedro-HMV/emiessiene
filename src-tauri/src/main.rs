@@ -93,8 +93,9 @@ type XmppState = std::sync::Arc<tokio::sync::Mutex<XmppManager>>;
 #[derive(Serialize, Deserialize, Clone)]
 struct SavedProfile {
     jid: String,
-    nickname: String,
-    flavour_text: String,
+    remember_me: bool,
+    auto_sign_in: bool,
+    last_availability: String,
 }
 
 fn read_profile_data(app_handle: &tauri::AppHandle) -> serde_json::Value {
@@ -223,6 +224,11 @@ fn main() {
             xmpp_add_contact,
             xmpp_get_connection_status,
             xmpp_register,
+            save_login_prefs,
+            xmpp_fetch_vcard,
+            get_pending_subscriptions,
+            xmpp_accept_subscription,
+            xmpp_deny_subscription,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -248,15 +254,12 @@ async fn update_username(
         app.user.name = name.clone();
         app.user.clone()
     };
-    // Persist nickname across sessions
-    let mut json = read_profile_data(&app_handle);
-    json["nickname"] = serde_json::Value::String(name.clone());
-    let _ = write_profile_data(&app_handle, &json);
-    // Best-effort vCard nickname update — don't fail if XMPP isn't connected
+    // Best-effort vCard update — don't fail if XMPP isn't connected
     let xmpp = xmpp_state.lock().await;
     if xmpp.is_connected().await {
-        if let Err(e) = xmpp.set_vcard_nickname(name).await {
-            log::warn!("Failed to update vCard nickname via XMPP: {}", e);
+        let desc = user.flavour_text.clone();
+        if let Err(e) = xmpp.set_vcard(name, desc).await {
+            log::warn!("Failed to update vCard via XMPP: {}", e);
         }
     }
     Ok(user)
@@ -318,16 +321,14 @@ async fn update_flavour_text(
         let availability = user.availability.clone();
         (user, availability)
     };
-    // Persist flavour_text across sessions
-    let mut json = read_profile_data(&app_handle);
-    json["flavour_text"] = serde_json::Value::String(flavour_text.clone());
-    match write_profile_data(&app_handle, &json) {
-        Ok(_) => log::info!("Saved flavour_text='{}' to profile", flavour_text),
-        Err(e) => log::error!("Failed to save flavour_text to profile: {}", e),
-    }
-    // In XMPP, the <status> element in a presence stanza carries the flavour_text
+    // In XMPP, persist flavour_text in the vCard DESC field AND broadcast via presence status
     let xmpp = xmpp_state.lock().await;
     if xmpp.is_connected().await {
+        let nickname = user.name.clone();
+        let desc = flavour_text.clone();
+        if let Err(e) = xmpp.set_vcard(nickname, desc).await {
+            log::warn!("Failed to update vCard DESC via XMPP: {}", e);
+        }
         let status = if flavour_text.is_empty() { None } else { Some(flavour_text) };
         if let Err(e) = xmpp.set_presence(availability, status).await {
             log::warn!("Failed to update XMPP presence status text: {}", e);
@@ -371,9 +372,26 @@ fn get_saved_profile(app_handle: tauri::AppHandle) -> Result<SavedProfile, Strin
     let json = read_profile_data(&app_handle);
     Ok(SavedProfile {
         jid: json["jid"].as_str().unwrap_or("").to_string(),
-        nickname: json["nickname"].as_str().unwrap_or("").to_string(),
-        flavour_text: json["flavour_text"].as_str().unwrap_or("").to_string(),
+        remember_me: json["remember_me"].as_bool().unwrap_or(false),
+        auto_sign_in: json["auto_sign_in"].as_bool().unwrap_or(false),
+        last_availability: json["last_availability"].as_str().unwrap_or("Online").to_string(),
     })
+}
+
+#[command]
+fn save_login_prefs(
+    app_handle: tauri::AppHandle,
+    jid: String,
+    remember_me: bool,
+    auto_sign_in: bool,
+    availability: String,
+) -> Result<(), String> {
+    let mut json = read_profile_data(&app_handle);
+    json["jid"] = serde_json::Value::String(if remember_me { jid } else { String::new() });
+    json["remember_me"] = serde_json::Value::Bool(remember_me);
+    json["auto_sign_in"] = serde_json::Value::Bool(auto_sign_in);
+    json["last_availability"] = serde_json::Value::String(availability);
+    write_profile_data(&app_handle, &json)
 }
 
 #[command]
@@ -468,6 +486,44 @@ async fn xmpp_add_contact(xmpp_state: State<'_, XmppState>, jid: String) -> Resu
     let xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.add_contact(jid).await?;
     Ok("Contact addition request sent".to_string())
+}
+
+#[command]
+async fn get_pending_subscriptions(
+    xmpp_state: State<'_, XmppState>,
+) -> Result<Vec<String>, String> {
+    let xmpp_manager = xmpp_state.lock().await;
+    Ok(xmpp_manager.drain_pending_subscriptions().await)
+}
+
+#[command]
+async fn xmpp_fetch_vcard(xmpp_state: State<'_, XmppState>) -> Result<String, String> {
+    log::info!("xmpp_fetch_vcard command called");
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.fetch_vcard().await?;
+    Ok("vCard request sent".to_string())
+}
+
+#[command]
+async fn xmpp_accept_subscription(
+    xmpp_state: State<'_, XmppState>,
+    jid: String,
+) -> Result<String, String> {
+    log::info!("xmpp_accept_subscription for {}", jid);
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.accept_subscription(jid).await?;
+    Ok("Subscription accepted".to_string())
+}
+
+#[command]
+async fn xmpp_deny_subscription(
+    xmpp_state: State<'_, XmppState>,
+    jid: String,
+) -> Result<String, String> {
+    log::info!("xmpp_deny_subscription for {}", jid);
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.deny_subscription(jid).await?;
+    Ok("Subscription denied".to_string())
 }
 
 #[command]
