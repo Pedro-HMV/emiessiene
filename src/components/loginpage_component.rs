@@ -167,6 +167,7 @@ pub fn LoginPage() -> impl IntoView {
 
                                     // Update global user context
                                     set_user.update(|user| {
+                                        user.email = jid.clone();
                                         user.name = display_name;
                                         user.availability = availability_value.clone();
                                         user.flavour_text = restored_ft;

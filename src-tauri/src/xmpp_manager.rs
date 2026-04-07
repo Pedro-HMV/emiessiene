@@ -9,7 +9,7 @@ use std::sync::{
 use tauri::Manager;
 use tokio::sync::{mpsc, Mutex};
 use tokio_xmpp::parsers::iq::Iq as XmppIq;
-use tokio_xmpp::parsers::message::{Lang, Message as XmppMsg};
+use tokio_xmpp::parsers::message::{Lang, Message as XmppMsg, MessageType};
 use tokio_xmpp::parsers::presence::{Presence, Show, Type as PresenceType};
 use tokio_xmpp::parsers::roster::Roster;
 use tokio_xmpp::{Event, Stanza};
@@ -421,6 +421,11 @@ async fn xmpp_event_loop(
                         }
                     }
                     Some(Event::Stanza(Stanza::Message(msg))) => {
+                        // Skip error stanzas (e.g. bounce from non-existent recipient)
+                        if msg.type_ == MessageType::Error {
+                            warn!("Skipping error message stanza from {:?}", msg.from);
+                            continue;
+                        }
                         if let Some((_, body_text)) = msg.get_best_body(vec!["en", ""]) {
                             let from_jid = msg.from.as_ref()
                                 .map(|j| j.to_string())

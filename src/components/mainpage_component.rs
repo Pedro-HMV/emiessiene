@@ -5,8 +5,8 @@ use leptos::task::spawn_local;
 use leptos::web_sys::HtmlInputElement;
 use leptos_router::components::A;
 use serde_wasm_bindgen::{from_value, to_value};
-use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 #[wasm_bindgen]
 extern "C" {
@@ -16,7 +16,9 @@ extern "C" {
 
 use super::friend_component::Friend;
 use super::models;
-use models::{Availability, Friend, UpdateAvailabilityArgs, UpdateFlavourTextArgs, UpdateUsernameArgs, User};
+use models::{
+    Availability, Friend, UpdateAvailabilityArgs, UpdateFlavourTextArgs, UpdateUsernameArgs, User,
+};
 
 #[component]
 pub fn MainPage() -> impl IntoView {
@@ -24,7 +26,8 @@ pub fn MainPage() -> impl IntoView {
     let (editing_flavour_text, set_editing_flavour_text) = signal(false);
     let (editing_availability, set_editing_availability) = signal(false);
     let flavour_input_ref = NodeRef::<leptos::html::Input>::new();
-    let (connection_status, set_connection_status) = signal("🔌 Checking connection...".to_string());
+    let (connection_status, set_connection_status) =
+        signal("🔌 Checking connection...".to_string());
 
     // Use the global user context instead of creating a local one
     let user = use_context::<ReadSignal<User>>().expect("No user context");
@@ -34,30 +37,36 @@ pub fn MainPage() -> impl IntoView {
         use_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No friends context");
 
     let open_chats =
-        move || use_context::<ReadSignal<Vec<usize>>>().expect("No open chats context");
+        move || use_context::<ReadSignal<Vec<String>>>().expect("No open chats context");
 
     let set_open_chats =
-        use_context::<WriteSignal<Vec<usize>>>().expect("No set open chats context");
+        use_context::<WriteSignal<Vec<String>>>().expect("No set open chats context");
+
+    let set_friends =
+        use_context::<WriteSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No set friends context");
 
     // Check XMPP connection status on page load
     {
         let set_connection_status = set_connection_status;
         spawn_local(async move {
-            match invoke("xmpp_get_connection_status", to_value(&serde_json::json!({})).unwrap()).await {
-                result => {
-                    match from_value::<serde_json::Value>(result) {
-                        Ok(status) => {
-                            if status["connected"].as_bool().unwrap_or(false) {
-                                set_connection_status.set("Connected".to_string());
-                            } else {
-                                set_connection_status.set("Disconnected".to_string());
-                            }
-                        }
-                        Err(_) => {
+            match invoke(
+                "xmpp_get_connection_status",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await
+            {
+                result => match from_value::<serde_json::Value>(result) {
+                    Ok(status) => {
+                        if status["connected"].as_bool().unwrap_or(false) {
+                            set_connection_status.set("Connected".to_string());
+                        } else {
                             set_connection_status.set("Disconnected".to_string());
                         }
                     }
-                }
+                    Err(_) => {
+                        set_connection_status.set("Disconnected".to_string());
+                    }
+                },
             }
         });
     }
@@ -65,6 +74,7 @@ pub fn MainPage() -> impl IntoView {
     // Set up XMPP event listeners
     {
         let set_connection_status = set_connection_status;
+        let set_friends = set_friends;
         spawn_local(async move {
             // Import Tauri's event listening capability
             #[wasm_bindgen]
@@ -79,31 +89,146 @@ pub fn MainPage() -> impl IntoView {
                 move |_event: JsValue| {
                     set_connection_status.set("Connected".to_string());
                 }
-            }) as Box<dyn Fn(JsValue)>);
+            })
+                as Box<dyn Fn(JsValue)>);
 
             let disconnected_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_connection_status = set_connection_status;
                 move |_event: JsValue| {
                     set_connection_status.set("Disconnected".to_string());
                 }
-            }) as Box<dyn Fn(JsValue)>);
+            })
+                as Box<dyn Fn(JsValue)>);
 
-            let _ = listen("xmpp_connected", connected_callback.as_ref().unchecked_ref()).await;
-            let _ = listen("xmpp_disconnected", disconnected_callback.as_ref().unchecked_ref()).await;
-            
+            // Roster received: replace friends list with real XMPP roster entries
+            let roster_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
+                let set_friends = set_friends;
+                move |raw: JsValue| {
+                    if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
+                        let payload = &envelope["payload"];
+                        if let Some(items) = payload.as_array() {
+                            let mut online: Vec<Friend> = Vec::new();
+                            let mut offline: Vec<Friend> = Vec::new();
+                            for item in items {
+                                let jid = item["jid"].as_str().unwrap_or("").to_string();
+                                let name = item["name"]
+                                    .as_str()
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| {
+                                        jid.split('@').next().unwrap_or(&jid).to_string()
+                                    });
+                                let sub = item["subscription"].as_str().unwrap_or("");
+                                // Only include mutual contacts
+                                if sub == "both" || sub == "from" || sub == "to" {
+                                    offline.push(Friend {
+                                        name,
+                                        email: jid,
+                                        flavour_text: String::new(),
+                                        availability: Availability::Offline,
+                                    });
+                                }
+                            }
+                            // Sort both lists by email (matches backend sort)
+                            online.sort_by(|a, b| a.email.cmp(&b.email));
+                            offline.sort_by(|a, b| a.email.cmp(&b.email));
+                            set_friends.set((online, offline));
+                        }
+                    }
+                }
+            })
+                as Box<dyn Fn(JsValue)>);
+
+            // Presence update: move friend between lists and update status text
+            let presence_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
+                let set_friends = set_friends;
+                move |raw: JsValue| {
+                    if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
+                        let payload = &envelope["payload"];
+                        let jid_full = payload["jid"].as_str().unwrap_or("").to_string();
+                        let bare_jid = jid_full.split('/').next().unwrap_or(&jid_full).to_string();
+                        let avail_str = payload["availability"].as_str().unwrap_or("Offline");
+                        let status_text = payload["status"].as_str().unwrap_or("").to_string();
+                        let new_avail = match avail_str {
+                            "Online" => Availability::Online,
+                            "Away" => Availability::Away,
+                            "Busy" => Availability::Busy,
+                            _ => Availability::Offline,
+                        };
+                        set_friends.update(|(online, offline)| {
+                            // Find the friend in either list and update in place
+                            let found_online = online.iter_mut().find(|f| f.email == bare_jid);
+                            let found_offline = offline.iter_mut().find(|f| f.email == bare_jid);
+                            let friend = found_online.or(found_offline);
+                            if let Some(f) = friend {
+                                f.availability = new_avail.clone();
+                                f.flavour_text = status_text;
+                            }
+                            // Re-sort online/offline split
+                            let all: Vec<Friend> =
+                                online.drain(..).chain(offline.drain(..)).collect();
+                            for f in all {
+                                if matches!(f.availability, Availability::Offline) {
+                                    offline.push(f);
+                                } else {
+                                    online.push(f);
+                                }
+                            }
+                            online.sort_by(|a, b| a.email.cmp(&b.email));
+                            offline.sort_by(|a, b| a.email.cmp(&b.email));
+                        });
+                    }
+                }
+            })
+                as Box<dyn Fn(JsValue)>);
+
+            let _ = listen(
+                "xmpp_connected",
+                connected_callback.as_ref().unchecked_ref(),
+            )
+            .await;
+            let _ = listen(
+                "xmpp_disconnected",
+                disconnected_callback.as_ref().unchecked_ref(),
+            )
+            .await;
+            let _ = listen(
+                "xmpp_roster_received",
+                roster_callback.as_ref().unchecked_ref(),
+            )
+            .await;
+            let _ = listen(
+                "xmpp_presence_update",
+                presence_callback.as_ref().unchecked_ref(),
+            )
+            .await;
+
             connected_callback.forget();
             disconnected_callback.forget();
+            roster_callback.forget();
+            presence_callback.forget();
         });
     }
 
     let online_friends = move || friends.get().0;
     let offline_friends = move || friends.get().1;
 
-    // Function to close a chat tab
-    let close_chat = move |chat_id: usize| {
+    // Close a chat tab by JID
+    let close_chat = move |jid: String| {
         set_open_chats.update(|chats| {
-            chats.retain(|&id| id != chat_id);
+            chats.retain(|j| j != &jid);
         });
+    };
+
+    // Helper: look up a friend's display name by JID
+    let friend_name_for_jid = move |jid: &str| -> String {
+        let (online, offline) = friends.get();
+        online
+            .iter()
+            .chain(offline.iter())
+            .find(|f| f.email == jid)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| jid.to_string())
     };
 
     let update_username = {
@@ -181,12 +306,10 @@ pub fn MainPage() -> impl IntoView {
     let select_availability = move |avail: Availability| {
         set_editing_availability.set(false);
         spawn_local(async move {
-            let args = UpdateAvailabilityArgs { availability: avail };
-            let result = invoke(
-                "update_availability",
-                to_value(&args).unwrap(),
-            )
-            .await;
+            let args = UpdateAvailabilityArgs {
+                availability: avail,
+            };
+            let result = invoke("update_availability", to_value(&args).unwrap()).await;
             if let Ok(updated_user) = from_value::<User>(result) {
                 set_user.update(|u| {
                     u.availability = updated_user.availability;
@@ -199,15 +322,20 @@ pub fn MainPage() -> impl IntoView {
         open_chats()
             .get()
             .iter()
-            .map(|&id| {
-                let friend = online_friends()[id].clone();
+            .map(|jid| {
+                let jid = jid.clone();
+                let display_name = friend_name_for_jid(&jid);
+                let jid_close = jid.clone();
                 let close_chat = close_chat.clone();
                 view! {
                     <div class="chat-tab-container">
-                        <A href=move || { format!("/chat/{}", id) }>
-                            <button class="chat-tab">{friend.name}</button>
+                        <A href=move || format!("/chat/{}", jid)>
+                            <button class="chat-tab">{display_name}</button>
                         </A>
-                        <button class="chat-tab-close" on:click=move |_| close_chat(id)>
+                        <button
+                            class="chat-tab-close"
+                            on:click=move |_| close_chat(jid_close.clone())
+                        >
                             "❌"
                         </button>
                     </div>
@@ -256,21 +384,42 @@ pub fn MainPage() -> impl IntoView {
                                 </Show>
                                 <Show
                                     when=move || editing_availability.get()
-                                    fallback=move || view! {
-                                        <span class="user-availability-parens">
-                                            " ("
-                                            <span class="user-availability-text">
-                                                {move || user.get().availability.to_string()}
+                                    fallback=move || {
+                                        view! {
+                                            <span class="user-availability-parens">
+                                                " ("
+                                                <span class="user-availability-text">
+                                                    {move || user.get().availability.to_string()}
+                                                </span> ")"
                                             </span>
-                                            ")"
-                                        </span>
+                                        }
                                     }
                                 >
                                     <div class="avail-dropdown">
-                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Online)>"Online"</button>
-                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Away)>"Away"</button>
-                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Busy)>"Busy"</button>
-                                        <button class="avail-option" on:click=move |_| select_availability(Availability::Offline)>"Offline"</button>
+                                        <button
+                                            class="avail-option"
+                                            on:click=move |_| select_availability(Availability::Online)
+                                        >
+                                            "Online"
+                                        </button>
+                                        <button
+                                            class="avail-option"
+                                            on:click=move |_| select_availability(Availability::Away)
+                                        >
+                                            "Away"
+                                        </button>
+                                        <button
+                                            class="avail-option"
+                                            on:click=move |_| select_availability(Availability::Busy)
+                                        >
+                                            "Busy"
+                                        </button>
+                                        <button
+                                            class="avail-option"
+                                            on:click=move |_| select_availability(Availability::Offline)
+                                        >
+                                            "Offline"
+                                        </button>
                                     </div>
                                 </Show>
                                 <button
@@ -283,21 +432,25 @@ pub fn MainPage() -> impl IntoView {
                             <div class="user-flavour-row">
                                 <Show
                                     when=move || editing_flavour_text.get()
-                                    fallback=move || view! {
-                                        <span
-                                            class="user-flavour-text"
-                                            class:user-flavour-placeholder=move || user.get().flavour_text.is_empty()
-                                            on:click=move |_| set_editing_flavour_text.set(true)
-                                        >
-                                            {move || {
-                                                let ft = user.get().flavour_text;
-                                                if ft.is_empty() {
-                                                    "<Type a personal message>".to_string()
-                                                } else {
-                                                    ft
+                                    fallback=move || {
+                                        view! {
+                                            <span
+                                                class="user-flavour-text"
+                                                class:user-flavour-placeholder=move || {
+                                                    user.get().flavour_text.is_empty()
                                                 }
-                                            }}
-                                        </span>
+                                                on:click=move |_| set_editing_flavour_text.set(true)
+                                            >
+                                                {move || {
+                                                    let ft = user.get().flavour_text;
+                                                    if ft.is_empty() {
+                                                        "<Type a personal message>".to_string()
+                                                    } else {
+                                                        ft
+                                                    }
+                                                }}
+                                            </span>
+                                        }
                                     }
                                 >
                                     <input
@@ -319,11 +472,11 @@ pub fn MainPage() -> impl IntoView {
                                         }
                                     }}
                                 </span>
-                                <span class="xmpp-label">
-                                    {move || connection_status.get()}
-                                </span>
+                                <span class="xmpp-label">{move || connection_status.get()}</span>
                                 <span class="status-sep">"|"</span>
-                                <span class="sign-out-link"><A href="/">"Sign Out"</A></span>
+                                <span class="sign-out-link">
+                                    <A href="/">"Sign Out"</A>
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -343,15 +496,13 @@ pub fn MainPage() -> impl IntoView {
                 <span class="bold">"🔽 Friends"</span>
                 <ul id="online-list">
                     <For
-                        each=move || {
-                            online_friends().clone().into_iter().enumerate().collect::<Vec<_>>()
-                        }
-                        key=|f| f.0
-                        children=move |(id, friend)| {
-                            let friend = friend.clone();
+                        each=move || online_friends()
+                        key=|f| f.email.clone()
+                        children=move |friend| {
+                            let jid = friend.email.clone();
                             view! {
                                 <li>
-                                    <A href=move || format!("/chat/{id}", id = id)>
+                                    <A href=move || format!("/chat/{}", jid)>
                                         <Friend
                                             availability=signal(friend.availability).0
                                             name=signal(friend.name).0
@@ -366,12 +517,9 @@ pub fn MainPage() -> impl IntoView {
                 <span class="mt-1 bold">"🔽 Offline"</span>
                 <ul id="offline-list">
                     <For
-                        each=move || {
-                            offline_friends().clone().into_iter().enumerate().collect::<Vec<_>>()
-                        }
-                        key=|f| f.0
-                        children=move |(_, friend)| {
-                            let friend = friend.clone();
+                        each=move || offline_friends()
+                        key=|f| f.email.clone()
+                        children=move |friend| {
                             view! {
                                 <li>
                                     <Friend

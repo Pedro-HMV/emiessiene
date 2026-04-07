@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Display;
 
 #[derive(Serialize, Deserialize)]
@@ -22,6 +23,32 @@ pub struct UpdateFlavourTextArgs<'a> {
 #[derive(Serialize, Deserialize)]
 pub struct UpdateAvailabilityArgs {
     pub availability: Availability,
+}
+
+/// A single chat message, stored in the global per-conversation history.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatMessage {
+    /// Bare JID of the sender (e.g. "alice@localhost"). For self-sent messages this is our own JID.
+    pub from_jid: String,
+    pub body: String,
+    /// ISO-8601 timestamp string as received from the backend.
+    pub timestamp: String,
+    /// true if we sent this message.
+    pub is_self: bool,
+    /// true until the backend confirms the send succeeded.
+    pub pending: bool,
+}
+
+/// Global message store: bare JID → ordered conversation history.
+pub type MessageStore = HashMap<String, Vec<ChatMessage>>;
+
+/// Args for the `xmpp_send_message` Tauri command.
+/// Tauri v1 maps snake_case parameter names to camelCase on the wire.
+#[derive(Serialize)]
+pub struct XmppSendMessageArgs {
+    #[serde(rename = "toJid")]
+    pub to_jid: String,
+    pub body: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

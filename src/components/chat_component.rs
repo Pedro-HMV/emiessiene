@@ -6,71 +6,74 @@ use leptos::view;
 use leptos::web_sys;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
-use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{from_value, to_value};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-
-use models::Friend;
 
 use super::message_component::Message;
 use super::models;
+use models::{ChatMessage, Friend, MessageStore, User, XmppSendMessageArgs};
 
 // Import the app's invoke function
 use crate::app::invoke;
 
 #[component]
-pub fn Chat(// show: WriteSignal<bool>,
-    // user: ReadSignal<User>,
-    // friends: ReadSignal<(Vec<Friend>, Vec<Friend>)>,
-    // friend: ReadSignal<usize>,
-    // close: impl Fn(usize) + 'static,
-) -> impl IntoView {
+pub fn Chat() -> impl IntoView {
     let (msg, set_msg) = signal(String::new());
-    let (message_list, set_message_list) = signal(Vec::new());
-    let update_msg = move |ev| {
-        let m = event_target_value(&ev);
-        set_msg.set(m);
-    };
+    let update_msg = move |ev| set_msg.set(event_target_value(&ev));
 
-    let set_open_chats = use_context::<WriteSignal<Vec<usize>>>();
-
+    let set_open_chats = use_context::<WriteSignal<Vec<String>>>();
     let friends =
         use_context::<ReadSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No friends context");
+    let user = use_context::<ReadSignal<User>>().expect("No user context");
+    // Global message store provided by App
+    let messages = use_context::<RwSignal<MessageStore>>().expect("No messages context");
 
     let navigate = use_navigate();
 
-    // Capture the friend_id once at component initialization
-    let static_friend_id = use_params_map()
+    // Read the bare JID from the route parameter (e.g. /chat/alice@localhost)
+    let jid_param = use_params_map()
         .get_untracked()
         .get("id")
-        .and_then(|id| id.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or_default();
 
-    let friend_id = move || static_friend_id;
-
-    // Function to close this chat - simple synchronous approach
-    let close_chat = move |ev: leptos::ev::MouseEvent| {
-        ev.prevent_default();
-        ev.stop_propagation();
-
-        log::info!(
-            "Close chat button clicked for friend_id: {}",
-            static_friend_id
-        );
-
-        // Update the open chats immediately - only if context is available
-        if let Some(set_open_chats) = set_open_chats {
-            set_open_chats.update(|chats| {
-                log::info!("Before update - open chats: {:?}", chats);
-                chats.retain(|&id| id != static_friend_id);
-                log::info!("After update - open chats: {:?}", chats);
-            });
+    // Look up the friend by JID. Returns a clone each call — two separate closures used in view.
+    let friend_info_name = {
+        let jid = jid_param.clone();
+        move || {
+            let (online, offline) = friends.get();
+            online
+                .into_iter()
+                .chain(offline)
+                .find(|f| f.email == jid)
+                .map(|f| f.name)
+                .unwrap_or_else(|| jid.clone())
         }
+    };
+    let friend_info_status = {
+        let jid = jid_param.clone();
+        move || {
+            let (online, offline) = friends.get();
+            online
+                .into_iter()
+                .chain(offline)
+                .find(|f| f.email == jid)
+                .map(|f| format!("{} <{}>", f.flavour_text, f.email))
+                .unwrap_or_default()
+        }
+    };
 
-        // Navigate immediately
-        log::info!("Navigating to /main");
-        navigate("/main", Default::default());
+    // Close this chat and return to main page
+    let close_chat = {
+        let jid = jid_param.clone();
+        move |ev: leptos::ev::MouseEvent| {
+            ev.prevent_default();
+            ev.stop_propagation();
+            if let Some(set_open_chats) = set_open_chats {
+                let jid = jid.clone();
+                set_open_chats.update(|chats| chats.retain(|j| j != &jid));
+            }
+            navigate("/main", Default::default());
+        }
     };
 
     let submit_on_enter = move |ev: KeyboardEvent| {
@@ -84,105 +87,91 @@ pub fn Chat(// show: WriteSignal<bool>,
         }
     };
 
-    let send_msg = move |ev: SubmitEvent| {
-        ev.prevent_default();
-        spawn_local(async move {
-            let msg = msg.get_untracked();
-            if msg.trim().is_empty() {
-                return;
-            }
+    let send_msg = {
+        let jid = jid_param.clone();
+        move |ev: SubmitEvent| {
+            ev.prevent_default();
+            let jid = jid.clone();
+            let messages = messages;
+            spawn_local(async move {
+                let body = msg.get_untracked();
+                if body.trim().is_empty() {
+                    return;
+                }
+                let body = body.trim().to_string();
 
-            // Get the friend's information for XMPP messaging
-            let friend_info = friends.get();
-            if friend_id() >= friend_info.0.len() {
-                log::error!("Invalid friend index: {}", friend_id());
-                return;
-            }
+                // Optimistically append to global store with pending=true (not yet confirmed by server)
+                let self_jid = user.get_untracked().email;
+                let optimistic_msg = ChatMessage {
+                    from_jid: self_jid,
+                    body: body.clone(),
+                    timestamp: String::new(),
+                    is_self: true,
+                    pending: true,
+                };
+                let mut pushed_idx: usize = 0;
+                messages.update(|store| {
+                    let conv = store.entry(jid.clone()).or_default();
+                    conv.push(optimistic_msg);
+                    if conv.len() > 200 {
+                        conv.drain(0..conv.len() - 200);
+                    }
+                    pushed_idx = conv.len() - 1;
+                });
 
-            let friend = &friend_info.0[friend_id()];
-            let friend_jid = friend.email.clone(); // Using email as JID
-
-            // Send message via XMPP
-            let send_args = serde_json::json!({
-                "to_jid": friend_jid.clone(),
-                "body": msg.trim().to_string(),
-            });
-
-            match invoke("xmpp_send_message", to_value(&send_args).unwrap()).await {
-                result => {
-                    match from_value::<serde_json::Value>(result) {
-                        Ok(response) => {
-                            if response["success"].as_bool().unwrap_or(false) {
-                                log::info!("Message sent successfully via XMPP to {}", friend_jid);
-                                // Add message to local list only after successful send
-                                set_message_list.update(|msg_list| msg_list.push(msg.clone()));
-                            } else {
-                                log::error!("Failed to send XMPP message: {:?}", response);
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Failed to parse XMPP response: {:?}", e);
-                        }
+                set_msg.set(String::new());
+                if let Some(input) = document().get_element_by_id("message-input") {
+                    if let Some(el) = input.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+                        el.set_value("");
                     }
                 }
-            }
 
-            // Clear the input field
-            set_msg.set(String::new());
-            if let Some(input) = document().get_element_by_id("message-input") {
-                if let Some(input_element) = input.dyn_ref::<web_sys::HtmlTextAreaElement>() {
-                    input_element.set_value("");
-                }
-            }
-        });
-    };
-
-    // Add this chat to open chats if context is available
-    if let Some(set_open_chats) = set_open_chats {
-        set_open_chats.update(|chats| {
-            if !chats.contains(&static_friend_id) {
-                chats.push(static_friend_id);
-            }
-        });
-    }
-
-    // Set up XMPP event listeners for incoming messages
-    {
-        let set_message_list = set_message_list;
-
-        spawn_local(async move {
-            // Import Tauri's event listening capability
-            #[wasm_bindgen]
-            extern "C" {
-                #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
-                async fn listen(event: &str, callback: &js_sys::Function) -> JsValue;
-            }
-
-            let callback = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: JsValue| {
-                // Parse the incoming message event
-                match from_value::<serde_json::Value>(event) {
-                    Ok(event_data) => {
-                        log::info!("Received XMPP event: {:?}", event_data);
-
-                        // For incoming messages, add them to the message list
-                        if let Some(from) = event_data["from"].as_str() {
-                            if let Some(body) = event_data["body"].as_str() {
-                                let incoming_message = format!("📥 {}: {}", from, body);
-                                set_message_list.update(|msg_list| msg_list.push(incoming_message));
+                // Send via XMPP
+                let args = XmppSendMessageArgs {
+                    to_jid: jid.clone(),
+                    body: body.clone(),
+                };
+                let result = invoke("xmpp_send_message", to_value(&args).unwrap()).await;
+                match from_value::<serde_json::Value>(result) {
+                    Ok(response) if response["success"].as_bool().unwrap_or(false) => {
+                        // Confirm delivery — clear the pending flag
+                        messages.update(|store| {
+                            if let Some(conv) = store.get_mut(&jid) {
+                                if let Some(msg) = conv.get_mut(pushed_idx) {
+                                    msg.pending = false;
+                                }
                             }
-                        }
+                        });
+                        leptos::logging::log!("Message sent to {}", jid);
+                    }
+                    Ok(response) => {
+                        leptos::logging::warn!("xmpp_send_message error: {:?}", response["error"]);
                     }
                     Err(e) => {
-                        log::error!("Failed to parse XMPP event: {:?}", e);
+                        leptos::logging::warn!("xmpp_send_message parse error: {:?}", e);
                     }
                 }
-            })
-                as Box<dyn Fn(JsValue)>);
+            });
+        }
+    };
 
-            let _ = listen("xmpp_message_received", callback.as_ref().unchecked_ref()).await;
-            callback.forget(); // Keep the callback alive
+    // Register this JID in open_chats so the main page tab tracks it
+    if let Some(set_open_chats) = set_open_chats {
+        let jid = jid_param.clone();
+        set_open_chats.update(|chats| {
+            if !chats.contains(&jid) {
+                chats.push(jid);
+            }
         });
     }
+
+    // Derive the displayed message list reactively from the global store
+    let displayed_messages = {
+        let jid = jid_param.clone();
+        move || -> Vec<ChatMessage> { messages.get().get(&jid).cloned().unwrap_or_default() }
+    };
+    // Clone for the author lookup inside the message rendering closure
+    let jid_for_msgs = jid_param.clone();
 
     view! {
         <main class="container">
@@ -198,20 +187,10 @@ pub fn Chat(// show: WriteSignal<bool>,
 
                     <div class="chat-header-center">
                         <span class="chat_receiver">
-                            {move || {
-                                format!(
-                                    "👤 {status}",
-                                    status = { friends.get().0[friend_id()].name.clone() },
-                                )
-                            }}
+                            {move || format!("\u{1F464} {}", friend_info_name())}
                         </span>
                         <span class="chat_receiver-status-message">
-                            {move || friends.get().0[friend_id()].flavour_text.clone()}
-                            <span class="ml-1">
-                                {move || {
-                                    format!("<{}>", friends.get().0[friend_id()].email.clone())
-                                }}
-                            </span>
+                            {move || friend_info_status()}
                         </span>
                     </div>
 
@@ -234,11 +213,31 @@ pub fn Chat(// show: WriteSignal<bool>,
                         <div class="chat_window">
                             <div class="chat_message-list main_bordered">
                                 {move || {
-                                    message_list
-                                        .get()
-                                        .iter()
+                                    let user_name = user.get().name;
+                                    let (online, offline) = friends.get();
+                                    let friend_name = online
+                                        .into_iter()
+                                        .chain(offline)
+                                        .find(|f| f.email == jid_for_msgs)
+                                        .map(|f| f.name)
+                                        .unwrap_or_else(|| {
+                                            jid_for_msgs
+                                                .split('@')
+                                                .next()
+                                                .unwrap_or(&jid_for_msgs)
+                                                .to_string()
+                                        });
+                                    displayed_messages()
+                                        .into_iter()
                                         .map(|m| {
-                                            view! { <Message content=signal(m.clone()).0 /> }
+                                            let author = if m.is_self {
+                                                user_name.clone()
+                                            } else {
+                                                friend_name.clone()
+                                            };
+                                            view! {
+                                                <Message author=author body=m.body pending=m.pending />
+                                            }
                                         })
                                         .collect::<Vec<_>>()
                                 }}
