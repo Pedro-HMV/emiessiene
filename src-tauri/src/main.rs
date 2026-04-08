@@ -229,6 +229,7 @@ fn main() {
             get_pending_subscriptions,
             xmpp_accept_subscription,
             xmpp_deny_subscription,
+            xmpp_request_roster,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -486,6 +487,14 @@ async fn xmpp_add_contact(xmpp_state: State<'_, XmppState>, jid: String) -> Resu
     let xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.add_contact(jid).await?;
     Ok("Contact addition request sent".to_string())
+}
+
+#[command]
+async fn xmpp_request_roster(xmpp_state: State<'_, XmppState>) -> Result<String, String> {
+    log::info!("xmpp_request_roster command called");
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.request_roster().await?;
+    Ok("Roster request sent".to_string())
 }
 
 #[command]

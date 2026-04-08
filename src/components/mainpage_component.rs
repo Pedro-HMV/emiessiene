@@ -128,6 +128,19 @@ pub fn MainPage() -> impl IntoView {
         });
     }
 
+    // Re-request the roster now that listeners are mounted.
+    // The initial roster fetch happens right after login, but the page isn't
+    // mounted yet at that point — this call ensures we always get fresh data.
+    {
+        spawn_local(async move {
+            let _ = invoke(
+                "xmpp_request_roster",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
+        });
+    }
+
     // Set up XMPP event listeners
     {
         let set_connection_status = set_connection_status;
@@ -264,19 +277,28 @@ pub fn MainPage() -> impl IntoView {
             // Listen for incoming subscription requests (pending friend requests)
             let subscription_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_pending_requests = set_pending_requests;
+                let friends = friends;
                 move |raw: JsValue| {
                     if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
                         let from_jid = envelope["payload"]["from_jid"]
                             .as_str()
                             .unwrap_or("")
                             .to_string();
-                        if !from_jid.is_empty() {
-                            set_pending_requests.update(|reqs| {
-                                if !reqs.contains(&from_jid) {
-                                    reqs.push(from_jid);
-                                }
-                            });
+                        if from_jid.is_empty() {
+                            return;
                         }
+                        // Skip if we already have this contact in the friends list
+                        let (online, offline) = friends.get_untracked();
+                        let already_friend = online.iter().any(|f| f.email == from_jid)
+                            || offline.iter().any(|f| f.email == from_jid);
+                        if already_friend {
+                            return;
+                        }
+                        set_pending_requests.update(|reqs| {
+                            if !reqs.contains(&from_jid) {
+                                reqs.push(from_jid);
+                            }
+                        });
                     }
                 }
             }) as Box<dyn Fn(JsValue)>);
@@ -289,6 +311,7 @@ pub fn MainPage() -> impl IntoView {
             // Listen for roster push (contact added / subscription state changed)
             let roster_push_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_friends = set_friends;
+                let set_pending_requests = set_pending_requests;
                 move |raw: JsValue| {
                     if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
                         let payload = &envelope["payload"];
@@ -310,7 +333,7 @@ pub fn MainPage() -> impl IntoView {
                                 if !exists {
                                     offline.push(Friend {
                                         name,
-                                        email: jid,
+                                        email: jid.clone(),
                                         flavour_text: String::new(),
                                         availability: Availability::Offline,
                                     });
@@ -319,6 +342,8 @@ pub fn MainPage() -> impl IntoView {
                                     });
                                 }
                             });
+                            // Remove from pending — this JID is now a confirmed contact
+                            set_pending_requests.update(|reqs| reqs.retain(|j| j != &jid));
                         }
                     }
                 }
@@ -481,9 +506,8 @@ pub fn MainPage() -> impl IntoView {
                         <div id="header_avatar">
                             <div
                                 id="avatar_img"
-                                style="width: 90px; height: 90px; background: black;"
+                                style="width: 90px; height: 90px;"
                             >
-                                a
                             </div>
                         </div>
                     </div>
@@ -639,7 +663,7 @@ pub fn MainPage() -> impl IntoView {
                 <button on:click=add_friend title="Add friend">"➕"</button>
                 {move || add_friend_status.get().map(|s| view! { <span class="add-friend-status">{s}</span> })}
             </div>
-            <div id="friends-container" class="flex-col flex-grow p-10 bg-white auto-y">
+            <div id="friends-container" class="flex-col flex-grow bg-white auto-y">
                 // Pending friend requests section (styled like Friends/Offline groups)
                 <Show when=move || !pending_requests.get().is_empty()>
                     <span class="bold">
@@ -724,7 +748,7 @@ pub fn MainPage() -> impl IntoView {
                         }
                     />
                 </ul>
-                <span class="group-header mt-1 bold">"Offline"</span>
+                <span class="group-header bold">"Offline"</span>
                 <ul id="offline-list">
                     <For
                         each=move || offline_friends()

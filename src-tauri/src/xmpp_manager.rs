@@ -55,6 +55,7 @@ enum OutgoingCmd {
         desc: String,
     },
     FetchVcard,
+    RequestRoster,
     AddContact {
         jid: String,
     },
@@ -333,6 +334,21 @@ impl XmppManager {
             .send(OutgoingCmd::AddContact { jid })
             .await
             .map_err(|e| format!("Failed to queue add contact: {}", e))
+    }
+
+    pub async fn request_roster(&self) -> Result<(), String> {
+        info!("Queueing roster request");
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::RequestRoster)
+            .await
+            .map_err(|e| format!("Failed to queue roster request: {}", e))
     }
 
     pub async fn fetch_vcard(&self) -> Result<(), String> {
@@ -727,6 +743,15 @@ async fn xmpp_event_loop(
                         };
                         if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
                             error!("Failed to send vCard set IQ: {}", e);
+                        }
+                    }
+                    Some(OutgoingCmd::RequestRoster) => {
+                        let roster_iq = XmppIq::from_get(
+                            "roster-refresh",
+                            Roster { ver: None, items: vec![] },
+                        );
+                        if let Err(e) = client.send_stanza(Stanza::Iq(roster_iq)).await {
+                            error!("Failed to send roster IQ: {}", e);
                         }
                     }
                     Some(OutgoingCmd::FetchVcard) => {

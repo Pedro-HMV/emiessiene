@@ -63,23 +63,29 @@ Leptos spawn_local { invoke("cmd_name", args) }
 | `xmpp_disconnect` | Disconnect from XMPP | (available) |
 | `xmpp_send_message` | Send a chat message | `chat_component.rs` |
 | `xmpp_set_presence` | Set availability/status | `loginpage_component.rs` (post-login) |
-| `xmpp_add_contact` | Add a contact to roster | (available) |
+| `xmpp_add_contact` | Add a contact to roster | `mainpage_component.rs` |
+| `xmpp_accept_subscription` | Accept a pending friend request | `mainpage_component.rs` |
+| `xmpp_deny_subscription` | Deny a pending friend request | `mainpage_component.rs` |
 | `xmpp_get_connection_status` | Poll connection state | `mainpage_component.rs` |
-| `xmpp_register` | IBR registration (XEP-0077) | **NOT YET WIRED** — `register_component.rs` still uses a placeholder |
+| `xmpp_register` | IBR registration (XEP-0077) | `register_component.rs` ✅ |
+| `xmpp_request_roster` | Re-fetch full roster from server | `mainpage_component.rs` (on mount) |
+| `xmpp_fetch_vcard` | Fetch own vCard (nickname + desc) | `mainpage_component.rs` |
+| `get_pending_subscriptions` | Drain buffered subscription requests | `mainpage_component.rs` (on mount) |
 
 ### Tauri Events (emitted by backend, listened to by frontend)
 | Event | Payload type | Frontend listener |
 |-------|-------------|-------------------|
-| `xmpp_connected` | `ConnectionStatus { connected, jid, error }` | `mainpage_component.rs` |
-| `xmpp_disconnected` | `ConnectionStatus` | `mainpage_component.rs` |
-| `xmpp_message_received` | `XmppMessage { id, from, to, body, timestamp, message_type }` | `chat_component.rs` |
-| `xmpp_presence_update` | `XmppPresence { jid, availability, status }` | **NOT YET WIRED** in frontend |
-| `xmpp_roster_received` | `[{ jid, name, subscription }]` | **NOT YET WIRED** in frontend |
+| `xmpp_connected` | `ConnectionStatus { connected, jid, error }` | `mainpage_component.rs` ✅ |
+| `xmpp_disconnected` | `ConnectionStatus` | `mainpage_component.rs` ✅ |
+| `xmpp_message_received` | `XmppMessage { id, from, to, body, timestamp, message_type }` | `chat_component.rs` ✅ |
+| `xmpp_presence_update` | `XmppPresence { jid, availability, status }` | `mainpage_component.rs` ✅ |
+| `xmpp_roster_received` | `[{ jid, name, subscription }]` | `mainpage_component.rs` ✅ |
+| `xmpp_roster_push` | `{ jid, name, subscription }` | `mainpage_component.rs` ✅ |
+| `xmpp_subscription_request` | `{ from_jid }` | `mainpage_component.rs` ✅ |
+| `xmpp_vcard_received` | `{ nickname, flavour_text }` | `mainpage_component.rs` ✅ |
 
 ### Known Frontend Gaps (implement before shipping)
-1. ~~`register_component.rs` — call `xmpp_register` instead of the `gloo_timers` placeholder~~ ✅ **DONE**
-2. `mainpage_component.rs` — listen for `xmpp_roster_received` and populate friends list from XMPP
-3. Any component — listen for `xmpp_presence_update` and update friend availability in real time
+- No known critical gaps — all XMPP events are now wired to the frontend.
 
 ### XMPP Backend Architecture
 - `src-tauri/src/xmpp_manager.rs` — `XmppManager` struct owns the connection
@@ -307,6 +313,56 @@ cargo test
 - Use proper serialization/deserialization
 - Handle file system operations securely
 - Test both development and production builds
+
+## ⚠️ Event Timing & Race Conditions
+
+**This is the single most common source of bugs in this project. Read carefully.**
+
+### The Problem
+The XMPP event loop runs in a background tokio task and emits events (`emit_all`) the instant they arrive. The frontend component may not have mounted and registered its `listen` callbacks yet. **Events fired before listeners are registered are permanently lost** — Tauri does not buffer or replay them.
+
+The classic case: `xmpp_connect` returns → frontend navigates to `/main` → backend immediately sends a roster IQ and receives the response → emits `xmpp_roster_received` → frontend is still mounting, listener not yet registered → friends list is empty forever.
+
+### The Fix Pattern
+For any data that is fetched once at connection time (roster, vCard, pending subscriptions), **always provide a re-fetch command** that the component calls on mount, after listeners are installed:
+
+```
+[Backend emits on connect]          [Component mounts, listeners ready]
+         ↓                                        ↓
+  Event may be missed        →   Call fetch command to re-request data
+                                          ↓
+                               Backend re-emits the event
+                                          ↓
+                               Listener catches it ✅
+```
+
+### Mandatory Checklist When Adding Any New XMPP Event
+
+1. **Does the backend emit this event during connection setup** (before the page has mounted)?
+   - YES → add a `xmpp_request_X` command the component calls on mount
+   - NO (user-triggered only) → a listener alone is sufficient
+
+2. **Can this event arrive before the user navigates to the page that handles it?**
+   - YES → buffer the data in `XmppManager` (like `pending_subscriptions`) and expose a drain command
+   - NO → listener alone is sufficient
+
+3. **Is the event a one-shot result of a request, or an ongoing push?**
+   - One-shot (roster, vCard) → re-request on mount
+   - Ongoing push (presence updates, messages, subscription requests) → listener alone, but check buffer for pre-mount arrivals
+
+### Established Patterns in This Codebase
+
+| Event | Strategy |
+|-------|----------|
+| `xmpp_roster_received` | Re-requested via `xmpp_request_roster` on `MainPage` mount |
+| `xmpp_subscription_request` | Backend buffers in `pending_subscriptions`; drained via `get_pending_subscriptions` on mount |
+| `xmpp_vcard_received` | Re-requested via `xmpp_fetch_vcard` on `MainPage` mount |
+| `xmpp_message_received` | Ongoing push; listener only (chat page mounted before messages arrive) |
+| `xmpp_presence_update` | Ongoing push; listener only |
+| `xmpp_roster_push` | Ongoing push; listener only |
+
+### Additional Pitfall: Duplicate Events
+When accepting a subscription (our `AcceptAndSubscribe` handler), we send a `subscribe` presence back. The XMPP server echoes this as a `subscribe` *from* the contact, triggering another `xmpp_subscription_request`. Always guard subscription request listeners by checking if the JID is already in the friends list before adding to pending.
 
 ## IDE and Editor Configuration
 

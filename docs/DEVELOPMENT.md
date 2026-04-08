@@ -430,6 +430,25 @@ fn test_component() {
    - Check for dependency conflicts
    - Verify Rust version compatibility
 
+4. **XMPP data missing after login (e.g. empty friends list, no vCard)**
+   - This is almost always an event timing / race condition
+   - The backend emits events the instant they arrive from the server
+   - If the frontend component hasn't mounted yet, the event fires into the void — **Tauri does not buffer or replay events**
+   - **Fix pattern**: always call a re-fetch command on component mount *after* registering listeners:
+     ```rust
+     // In the mount spawn_local, AFTER setting up all listen() callbacks:
+     let _ = invoke("xmpp_request_roster", to_value(&serde_json::json!({})).unwrap()).await;
+     let _ = invoke("xmpp_fetch_vcard",    to_value(&serde_json::json!({})).unwrap()).await;
+     // drain_pending_subscriptions for buffered pre-mount arrivals
+     let result = invoke("get_pending_subscriptions", ...).await;
+     ```
+   - For events that may arrive repeatedly before mount, buffer them in `XmppManager` (see `pending_subscriptions`) and expose a drain command
+
+5. **Duplicate pending friend requests (contact shows in Pending after already being accepted)**
+   - Caused by ejabberd echoing the mutual `subscribe` presence back as a new incoming `subscribe`
+   - Guard the `xmpp_subscription_request` listener: skip adding a JID to pending if it is already present in either the online or offline friends list
+   - The `xmpp_roster_push` listener should also call `set_pending_requests.update(|r| r.retain(...))` when a contact moves to `"both"/"from"/"to"` subscription state
+
 ## 🚀 Performance Optimization
 
 ### Frontend Optimization

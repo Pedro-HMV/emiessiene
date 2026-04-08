@@ -3,20 +3,20 @@ html {
 }
 
 body {
-  margin: 16px;
+  margin: 0;
   overflow: hidden;
   height: 100vh;
-  min-width: 320px; /* Minimum mobile width */
+  min-width: 280px;
+  background: linear-gradient(to bottom, #b8d4e3 0%, #d0e5f0 25%, #e8f3fa 55%, #f5fafd 100%);
 }
 
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
+  font-family: Tahoma, 'Segoe UI', Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
   font-weight: 400;
 
-  color: #0f0f0f;
-  background: linear-gradient(#daeced, #ecf5f6);
+  color: #1a1a1a;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -36,38 +36,66 @@ a:hover {
 
 
 #main-container {
-  max-height: calc(100vh - 32px);
-  /* margin-top: 16px; */
+  height: 100vh;
+  max-height: 100vh;
 }
 
 #friends-container {
-  max-height: calc(100vh - 192px);
+  flex: 1;
+  min-height: 0;
+  padding: 0;
 }
 
 #find-friends {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding-block: 3px;
-  padding-inline: 6px;
+  padding: 4px 6px;
+  background: rgba(255,255,255,0.45);
+  border-bottom: 1px solid #b0cede;
 }
 
 #find-friends input {
   flex: 1;
-  padding: 2px 4px;
-  font-size: 13px;
+  padding: 3px 6px;
+  font-size: 12px;
   min-width: 0;
+  background: white;
+  border: 1px solid #a0bccf !important;
+  border-image: none !important;
+  border-radius: 1px;
 }
 
 #find-friends button {
   flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 12px;
+  background: linear-gradient(to bottom, #e8f3fb, #cce0ef);
+  border: 1px solid #8ab0c8 !important;
+  border-image: none !important;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+#find-friends button:hover {
+  background: linear-gradient(to bottom, #daedf9, #b8d3e5);
 }
 
 .group-header {
   display: flex;
   align-items: center;
+  width: 100%;
+  box-sizing: border-box;
   cursor: default;
   user-select: none;
+  background: linear-gradient(to bottom, #cddfe9, #b6cedc);
+  border-top: 1px solid #c0d5e3;
+  border-bottom: 1px solid #9dbace;
+  padding: 3px 6px;
+  margin: 1px 0;
+  font-size: 12px;
+  font-weight: bold;
+  color: #1c3a50;
 }
 
 .group-header::before {
@@ -77,7 +105,7 @@ a:hover {
   height: 0;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-top: 6px solid #444;
+  border-top: 6px solid #2a5570;
   margin-right: 5px;
   flex-shrink: 0;
 }
@@ -121,11 +149,12 @@ ul {
 }
 
 #header_container {
-  background: linear-gradient(#a1c4d2, #f6fffb)
+  background: linear-gradient(to bottom, #a8c8dc 0%, #c4dce9 40%, #daeaf3 75%, #edf5fa 100%);
+  border-bottom: 1px solid #89afc8;
 }
 
 .bg-white {
-  background-color: white;
+  background-color: transparent;
 }
 
 .border-st {
@@ -178,7 +207,7 @@ ul {
 
 .user-display-name {
   font-weight: bold;
-  font-size: 1rem;
+  font-size: 1.15rem;
   cursor: pointer;
   margin-right: 0.3em;
 }
@@ -189,19 +218,19 @@ ul {
 
 .user-name-input {
   font-weight: bold;
-  font-size: 1rem;
+  font-size: 1.15rem;
   width: 160px;
   margin-right: 0.3em;
 }
 
 .user-availability-parens {
-  font-size: 0.85rem;
+  font-size: 1rem;
   color: #333;
   white-space: nowrap;
 }
 
 .user-availability-text {
-  font-size: 0.85rem;
+  font-size: 1rem;
 }
 
 /* Availability select — blends with the gradient header */
@@ -210,7 +239,7 @@ ul {
   border: 1px solid rgba(100, 140, 170, 0.5);
   border-radius: 2px;
   font-family: inherit;
-  font-size: 0.85rem;
+  font-size: 1rem;
   color: #1a1a2e;
   padding: 0 2px;
   cursor: pointer;
@@ -241,7 +270,7 @@ ul {
   border: none;
   border-image: none;
   padding: 3px 10px;
-  font-size: 0.85rem;
+  font-size: 1rem;
   font-family: inherit;
   font-weight: normal;
   text-align: left;
@@ -280,7 +309,7 @@ ul {
 }
 
 .user-flavour-text {
-  font-size: 0.82rem;
+  font-size: 0.95rem;
   color: #3a5a6a;
   cursor: pointer;
   font-style: italic;
@@ -299,7 +328,7 @@ ul {
 }
 
 .user-flavour-input {
-  font-size: 0.82rem;
+  font-size: 0.95rem;
   font-style: italic;
   width: 200px;
   color: #3a5a6a;
@@ -311,12 +340,12 @@ ul {
   align-items: center;
   gap: 5px;
   margin-top: 5px;
-  font-size: 0.72rem;
+  font-size: 0.85rem;
   color: #556;
 }
 
 .xmpp-dot {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   line-height: 1;
 }
 
@@ -411,11 +440,10 @@ textarea,
 input,
 button {
   border: 0.1px solid transparent;
-  padding: 0.6em 1.2em;
+  padding: 0.3em 0.7em;
   font-size: 1em;
-  font-weight: 500;
+  font-weight: 400;
   font-family: inherit;
-  /* box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2); */
   border-image: linear-gradient(#fcfcfc, #e2e2e2) 1;
 }
 
@@ -486,9 +514,16 @@ button {
 .avatar {
   height: 0;
   padding-bottom: calc(100% - 10px); /* Square aspect ratio */
-  background-color: #0f0f0f;
+  background: linear-gradient(145deg, #5a8faa 0%, #3d6a84 55%, #2a4f68 100%);
   max-width: 200px; /* Prevent excessive growth */
   max-height: 200px;
+  border-radius: 8px;
+  box-shadow:
+    inset 0 1px 2px rgba(255,255,255,0.55),
+    inset 0 -1px 2px rgba(0,0,0,0.25),
+    0 2px 6px rgba(0,0,0,0.35);
+  outline: 1px solid rgba(255,255,255,0.30);
+  outline-offset: -2px;
 }
 
 /* Responsive breakpoints */
@@ -915,8 +950,12 @@ button {
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: #f0f8ff;
-  border-bottom: 1px solid #c8ded9;
+  background: rgba(180,210,228,0.55);
+  border-bottom: 1px solid #a0c4d8;
+}
+
+.chat-tabs:empty {
+  display: none;
 }
 
 .chat-tab-container {
@@ -1102,9 +1141,10 @@ button {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: calc(100vh - 32px);
+  min-height: 100vh;
   padding: 16px;
   box-sizing: border-box;
+  background: linear-gradient(to bottom, #b8d4e3 0%, #d0e5f0 25%, #e8f3fa 55%, #f5fafd 100%);
 }
 
 #login_title {
@@ -1132,6 +1172,10 @@ button {
   padding: 8px 10px;
   box-sizing: border-box;
   font-size: 14px;
+  background: rgba(255,255,255,0.85);
+  border: 1px solid #9ab8cc !important;
+  border-image: none !important;
+  border-radius: 2px;
 }
 
 #login_form select {
@@ -1141,10 +1185,18 @@ button {
 
 #login_submit {
   align-self: center;
-  padding: 8px 40px;
+  padding: 6px 40px;
   margin-top: 4px;
-  font-size: 14px;
+  font-size: 13px;
   cursor: pointer;
+  background: linear-gradient(to bottom, #e8f3fb, #c8dff0);
+  border: 1px solid #7aaac4 !important;
+  border-image: none !important;
+  border-radius: 3px;
+}
+
+#login_submit:hover {
+  background: linear-gradient(to bottom, #d8eaf8, #b0d2e8);
 }
 
 /* ── Pending group ───────────────────────────────────────────── */
@@ -1207,4 +1259,46 @@ button {
 
 .pending-deny:hover {
   background: #f8bbd0;
+}
+
+/* ── Contact rows ────────────────────────────────────────────── */
+#online-list li,
+#offline-list li {
+  cursor: pointer;
+}
+
+#online-list li:hover,
+#offline-list li:hover {
+  background: #daeaf5;
+}
+
+#friend_container {
+  margin-inline: 0;
+  padding: 2px 6px 2px 4px;
+  font-size: 12px;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Header avatar ───────────────────────────────────────────── */
+#avatar_img {
+  background: linear-gradient(145deg, #5a8faa 0%, #3d6a84 55%, #2a4f68 100%) !important;
+  border: none !important;
+  border-radius: 8px;
+  box-shadow:
+    inset 0 1px 2px rgba(255,255,255,0.55),
+    inset 0 -1px 2px rgba(0,0,0,0.25),
+    0 2px 6px rgba(0,0,0,0.35);
+  outline: 1px solid rgba(255,255,255,0.30);
+  outline-offset: -2px;
+}
+
+/* ── Add-friend status message ───────────────────────────────── */
+.add-friend-status {
+  font-size: 11px;
+  color: #336680;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

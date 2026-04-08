@@ -320,9 +320,10 @@ pub fn LoginPage() -> impl IntoView {
         <div id="login_container">
             <div id="login_title">"NTO"</div>
             <div id="login_avatar">
-                <div id="login_avatar_img" style="width: 150px; height: 150px; background: black;">
-                    a
-                </div>
+                <div
+                    id="login_avatar_img"
+                    style="width: 150px; height: 150px; background: linear-gradient(145deg, #5a8faa 0%, #3d6a84 55%, #2a4f68 100%); border-radius: 10px; box-shadow: inset 0 1px 2px rgba(255,255,255,0.55), inset 0 -1px 2px rgba(0,0,0,0.25), 0 3px 8px rgba(0,0,0,0.4); outline: 1px solid rgba(255,255,255,0.3); outline-offset: -3px;"
+                ></div>
             </div>
             <form id="login_form">
                 <input
