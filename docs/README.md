@@ -4,16 +4,20 @@ A modern recreation of the classic MSN Messenger instant messaging client, built
 
 ## 🎯 Project Overview
 
-**NTO** is a desktop application that mimics the interface and functionality of the classic MSN Messenger. The name is a playful reference to "MSN" that captures the nostalgic spirit of the original application.
+**NTO** is a desktop application that mimics the interface and functionality of the classic MSN Messenger. The name is a playful reference to "MSN" that captures the nostalgic spirit of the original.
+
+The app connects to a real XMPP server using direct-TLS (port 5223), making it a functional instant messenger — not just a mock UI.
 
 ### Core Features
 
-- **User Authentication**: Login interface with status selection (Online, Away, Busy, Offline)
-- **Friend Management**: Display of online and offline friends with status messages
-- **Real-time Messaging**: Chat interface with individual friend conversations
-- **Status Management**: Users can set custom status messages and availability
-- **Tabbed Conversations**: Support for multiple simultaneous chats
-- **Classic UI Design**: Faithful recreation of the original MSN Messenger interface
+- **User Authentication**: Login with XMPP credentials (JID + password). Remember me and auto sign-in support.
+- **Account Registration**: Create new accounts directly from the app via in-band registration (XEP-0077).
+- **Friend Management**: Live XMPP roster with online/offline status display and real-time updates.
+- **vCard Display Names**: Contacts show their vCard nickname, not a raw JID local-part.
+- **Real-time Messaging**: Chat interface with individual conversations and message history.
+- **Presence & Status**: Set availability (Online, Away, Busy) with a custom mood message.
+- **Tabbed Conversations**: Multiple simultaneous chat tabs.
+- **Classic MSN UI**: Faithful recreation of the original MSN Messenger interface.
 
 ## 🏗️ Architecture
 
@@ -29,30 +33,32 @@ A modern recreation of the classic MSN Messenger instant messaging client, built
 
 ```
 nto/
-├── src/                           # Frontend Leptos application
-│   ├── app.rs                     # Main app router and context providers
-│   ├── main.rs                    # Application entry point
+├── src/                           # Frontend Leptos application (compiles to WASM)
+│   ├── app.rs                     # Router, global signals, context providers, sign-out
+│   ├── main.rs                    # WASM entry point
 │   ├── components.rs              # Module declarations
 │   └── components/                # UI components
-│       ├── models.rs              # Shared data models
-│       ├── loginpage_component.rs # Login screen
-│       ├── mainpage_component.rs  # Main application interface
-│       ├── chat_component.rs      # Chat conversation UI
+│       ├── models.rs              # Shared data models (User, Friend, Availability)
+│       ├── loginpage_component.rs # Login screen — XMPP connect, remember me
+│       ├── register_component.rs  # Registration screen (XEP-0077)
+│       ├── mainpage_component.rs  # Main interface — friends, XMPP listeners, vCard
+│       ├── chat_component.rs      # Chat window — messages, input, avatars
 │       ├── friend_component.rs    # Friend list item
-│       └── message_component.rs   # Chat message display
-├── src-tauri/                     # Backend Tauri application
-│   ├── src/main.rs               # Tauri backend with API commands
+│       └── message_component.rs  # Message bubble
+├── src-tauri/                     # Backend Tauri application (native Rust)
+│   ├── src/
+│   │   ├── main.rs               # Tauri commands, AppState, XMPP bridge
+│   │   └── xmpp_manager.rs       # XMPP connection, event loop, roster, vCard, presence
 │   ├── Cargo.toml                # Backend dependencies
 │   ├── tauri.conf.json           # Tauri configuration
-│   ├── user.json                 # User data storage
-│   └── friends.json              # Friends list storage
+│   └── icons/                    # App icons
 ├── public/                        # Static assets
 ├── docs/                          # Documentation
 ├── testing/                       # Test scripts and utilities
 ├── index.html                     # HTML template
 ├── styles.css                     # Main stylesheet
 ├── Cargo.toml                     # Frontend dependencies
-└── Trunk.toml                     # Trunk configuration
+└── Trunk.toml                     # Trunk build configuration
 ```
 
 ## 🚀 Getting Started
@@ -116,40 +122,24 @@ The built application will be available in `src-tauri/target/release/bundle/`.
 
 ## 📱 Application Flow
 
-### User Journey
+### Routes
 
-1. **Login Screen** (`/`)
-   - User enters credentials
-   - Selects availability status
-   - Options for "Remember me" and "Auto sign in"
-
-2. **Main Interface** (`/main`)
-   - User profile display with editable username
-   - Friends list (online/offline sections)
-   - Status message display
-   - Friend search functionality
-
-3. **Chat Interface** (`/chat/:id`)
-   - Individual conversation window
-   - Message input with send functionality
-   - Chat controls (voice, video, files, etc.)
-   - User avatars and status indicators
+| Path | Component | Purpose |
+|------|-----------|--------|
+| `/` | `LoginPage` | XMPP login with remember-me, auto sign-in, availability picker |
+| `/register` | `RegisterPage` | New account creation via XEP-0077 |
+| `/main` | `MainPage` | Friends list, presence, vCard, open chat tabs, sign out |
+| `/chat/:id` | `Chat` | Individual conversation window with message history |
 
 ### Data Flow
 
-1. **Frontend (Leptos)**
-   - Handles UI rendering and user interactions
-   - Manages reactive state using signals
-   - Communicates with backend via Tauri commands
+1. **Frontend (Leptos WASM)** — renders UI reactively using Leptos signals; talks to backend via `invoke()` (request/response) and `listen()` (event push).
 
-2. **Backend (Tauri)**
-   - Provides secure native APIs
-   - Manages user and friend data storage
-   - Handles application state management
+2. **Backend (Tauri native Rust)** — manages the XMPP connection in a background tokio task, emits events to the frontend via `emit_all()`, and persists login preferences to `%APPDATA%\nto\nto_remembered.json`.
 
-3. **Data Storage**
-   - `user.json`: Current user information
-   - `friends.json`: Friends list with status data
+3. **XMPP Server** — authoritative source for roster, presence, messages. NTO uses direct-TLS on port 5223.
+
+4. **State reset on sign-out** — `App` holds all global signals (`user`, `friends`, `open_chats`, `messages`). The sign-out callback in `app.rs` resets all four signals before navigating back to `/`.
 
 ## 🎨 Component Architecture
 
@@ -189,37 +179,34 @@ The built application will be available in `src-tauri/target/release/bundle/`.
 
 Located in `src/components/models.rs`:
 
-- **User**: Name, email, status message, availability
-- **Friend**: Name, email, status message, availability
-- **Availability**: Enum (Online, Away, Busy, Offline)
-- **UpdateUsernameArgs**: API parameter structure
+- **User**: `name`, `email`, `flavour_text`, `availability`
+- **Friend**: `name`, `email`, `flavour_text`, `availability`
+- **Availability**: Enum (`Online`, `Away`, `Busy`, `Offline`)
 
 ## 🔧 API Reference
 
-### Tauri Commands
+See [API.md](API.md) for the full command and event reference. Key commands:
 
-The backend exposes the following commands for frontend communication:
+| Command | Description |
+|---------|-------------|
+| `xmpp_connect` | Connect to XMPP server (direct-TLS port 5223) |
+| `xmpp_register` | Create account via XEP-0077 |
+| `xmpp_request_roster` | Fetch contacts from server |
+| `xmpp_send_message` | Send a chat message |
+| `xmpp_set_presence` | Broadcast availability + mood |
+| `xmpp_fetch_vcard` | Fetch own vCard (name + flavour text) |
+| `xmpp_add_contact` | Add contact + subscribe |
+| `xmpp_accept_subscription` | Accept inbound friend request |
 
-#### User Management
-- `get_user()`: Retrieve current user information
-- `update_username(name: String)`: Update user's display name
+Key events pushed from backend to frontend:
 
-#### Friend Management
-- `get_friends()`: Get sorted friends list (online, offline)
-- `add_friend(name, email, status?, availability?)`: Add new friend
-- `update_friend(email, name?, status?, availability?)`: Update friend information
-
-### Frontend State Management
-
-#### Context Providers
-- `user: ReadSignal<User>`: Current user state
-- `friends: ReadSignal<(Vec<Friend>, Vec<Friend>)>`: Online and offline friends
-- `open_chats: ReadSignal<Vec<usize>>`: List of active chat tabs
-
-#### Local State
-- Component-specific signals for UI state
-- Actions for async operations
-- Effects for reactive updates
+| Event | Trigger |
+|-------|---------|
+| `xmpp_roster_received` | Full roster loaded |
+| `xmpp_presence_update` | Contact came online / went offline |
+| `xmpp_message_received` | Incoming chat message |
+| `xmpp_subscription_request` | Someone wants to add you |
+| `xmpp_vcard_received` | vCard data ready |
 
 ## 🎭 Styling and Theming
 
@@ -239,9 +226,32 @@ Key style classes:
 ## 🔒 Security Considerations
 
 - **Tauri Security**: Application runs with restricted permissions
-- **Data Storage**: Local JSON files for development (consider encryption for production)
+- **Credentials**: Stored in `%APPDATA%\nto\nto_remembered.json` — never hardcoded
+- **TLS**: All XMPP traffic is encrypted via direct-TLS (port 5223)
 - **API Commands**: Validated inputs and error handling
 - **Frontend Validation**: Input sanitization and type safety
+
+## 🚀 Deployment
+
+### Building for Windows distribution
+
+```powershell
+cargo tauri build
+# Output: src-tauri/target/release/bundle/nsis/*.exe
+#         src-tauri/target/release/bundle/msi/*.msi
+```
+
+### XMPP Server (Oracle Cloud Free Tier)
+
+The recommended hosting option is an Oracle Cloud Always Free ARM instance (VM.Standard.A1.Flex): 4 OCPUs, 24 GB RAM, 200 GB storage, 10 TB/month outbound — permanently free.
+
+Key requirements:
+- Install **Prosody** XMPP server on Ubuntu 22.04
+- Open ports 5222 (STARTTLS) and 5223 (direct-TLS) in the VCN Security List
+- Add a keepalive cron job to prevent Oracle reclaiming idle VMs
+- Back up `/var/lib/prosody/` to OCI Object Storage (20 GB free) daily
+
+See [DEVELOPMENT.md](DEVELOPMENT.md#-xmpp-server-setup-for-testing--production) for full step-by-step instructions.
 
 ## 🧪 Development Guidelines
 
@@ -275,7 +285,11 @@ Key style classes:
 2. **Runtime Errors**
    - Check browser console for frontend errors
    - Review Tauri logs for backend issues
-   - Verify JSON data file integrity
+   - XMPP connection errors appear in the login page error field
+
+3. **Empty friends list after login**
+   - This is an event-timing issue — the roster event fired before the MainPage listener was registered
+   - The app re-fetches the roster on mount via `xmpp_request_roster` to handle this automatically
 
 3. **Styling Issues**
    - Ensure CSS is properly linked

@@ -94,6 +94,61 @@ Leptos spawn_local { invoke("cmd_name", args) }
 - Transport: direct-TLS (port 5223) via `tokio-xmpp 5` with `native-tls`
 - IQ strategy: send via `client.send_stanza(Stanza::Iq(...))`, response arrives through the stream as `Event::Stanza(Stanza::Iq(...))`
 
+## Packaging & Deployment
+
+### Building the Windows Installer
+```powershell
+cargo tauri build
+# Output: src-tauri/target/release/bundle/nsis/*.exe  (NSIS installer)
+#         src-tauri/target/release/bundle/msi/*.msi   (MSI installer)
+```
+No code changes needed — `#[cfg(not(debug_assertions))]` switches automatically. Ensure `tauri.conf.json` has the correct `identifier`, `productName`, and `version` before shipping.
+
+### XMPP Server: Oracle Cloud Free Tier (ARM A1)
+
+**Spec**: 4 OCPUs, 24 GB RAM, 200 GB storage, 10 TB/month outbound — free forever.
+
+**Critical**: Oracle reclaims VMs idle for 7+ consecutive days (CPU/network/memory all < 20%). A keepalive cron job is mandatory.
+
+#### One-time VM Setup
+1. Create Oracle Cloud account → choose home region
+2. Compute → Instances → Create → Shape: **VM.Standard.A1.Flex** → 4 OCPUs, 24 GB RAM
+3. OS: Ubuntu 22.04 LTS (Always Free eligible) — generate and download SSH key pair
+4. VCN Security List → add Ingress rules: TCP 22 (SSH), TCP 5222 (XMPP STARTTLS), TCP 5223 (XMPP direct-TLS)
+
+#### Prosody Installation (Ubuntu)
+```bash
+sudo apt update && sudo apt install prosody -y
+
+# /etc/prosody/prosody.cfg.lua — minimum viable config:
+# VirtualHost "your-domain.or.ip"
+#   ssl = { key = "...", certificate = "..." }
+#   modules_enabled = { "saslauth", "roster", "vcard", "register", ... }
+
+# Self-signed cert for testing (replace with Let's Encrypt for production):
+sudo prosodyctl cert generate your-domain.com
+sudo systemctl restart prosody
+
+# Create user accounts:
+sudo prosodyctl register alice your-domain.com password123
+sudo prosodyctl register bob   your-domain.com password456
+```
+
+#### Keepalive Cron (prevents VM reclamation)
+```bash
+# /etc/cron.d/oci-keepalive
+0 */6 * * * root dd if=/dev/urandom of=/tmp/kv bs=1M count=50 2>/dev/null && rm /tmp/kv
+```
+
+#### Prosody Backup to OCI Object Storage (20 GB free, survives VM loss)
+```bash
+# Daily backup of /var/lib/prosody/ → Object Storage bucket
+# Recovery: download latest .tar.gz, extract to /var/lib/prosody/, chown prosody:prosody, restart
+```
+
+### Connection Format
+NTO connects via direct-TLS on port 5223. Login JID format: `user@your-domain.com`. For LAN testing with a server IP, the client must accept the self-signed cert (currently done via `native-tls` accepting all certs in dev builds — tighten for production).
+
 ## Project Structure Rules
 
 ### File Organization
@@ -334,6 +389,28 @@ For any data that is fetched once at connection time (roster, vCard, pending sub
                                Backend re-emits the event
                                           ↓
                                Listener catches it ✅
+```
+
+**CRITICAL**: The re-fetch calls MUST be inside the same `spawn_local` as the `listen()` calls, placed **after** all `listen()` awaits complete. A separate `spawn_local` block runs concurrently and will race against listener registration — the response can arrive before the callback is registered and be lost again.
+
+```rust
+spawn_local(async move {
+    // 1. Register ALL listeners first
+    let _ = listen("xmpp_roster_received", roster_cb.as_ref().unchecked_ref()).await;
+    let _ = listen("xmpp_vcard_received",  vcard_cb.as_ref().unchecked_ref()).await;
+    // ... other listen() calls ...
+
+    // 2. Forget callbacks to keep them alive
+    roster_cb.forget();
+    vcard_cb.forget();
+
+    // 3. ONLY NOW trigger re-fetches — listeners are guaranteed registered
+    let _ = invoke("xmpp_request_roster", ...).await;
+    let _ = invoke("xmpp_fetch_vcard",    ...).await;
+    let pending = invoke("get_pending_subscriptions", ...).await;
+    // ... process pending ...
+});
+// ❌ NEVER do re-fetches in a separate spawn_local — they race with the above
 ```
 
 ### Mandatory Checklist When Adding Any New XMPP Event

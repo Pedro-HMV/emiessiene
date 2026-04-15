@@ -21,6 +21,12 @@ struct XmppConnectArgs {
 }
 
 #[derive(Serialize)]
+struct SetPresenceArgs {
+    availability: Availability,
+    status: Option<String>,
+}
+
+#[derive(Serialize)]
 struct SaveLoginPrefsArgs {
     jid: String,
     #[serde(rename = "rememberMe")]
@@ -62,7 +68,7 @@ pub fn LoginPage() -> impl IntoView {
     spawn_local(async move {
         if let Ok(result) = invoke_catching("get_saved_profile", JsValue::null()).await {
             if let Ok(profile) = from_value::<SavedProfile>(result) {
-                if !profile.jid.is_empty() {
+                if !profile.jid.is_empty() && username.get_untracked().is_empty() {
                     set_username.set(profile.jid);
                 }
                 set_remember_me.set(profile.remember_me);
@@ -183,6 +189,19 @@ pub fn LoginPage() -> impl IntoView {
                                         let _ = invoke_catching("save_login_prefs", args).await;
                                     }
 
+                                    // Send the availability the user selected (Online/Away/Busy)
+                                    if !matches!(availability_value, Availability::Offline) {
+                                        let _ = invoke_catching(
+                                            "xmpp_set_presence",
+                                            to_value(&SetPresenceArgs {
+                                                availability: availability_value.clone(),
+                                                status: None,
+                                            })
+                                            .unwrap(),
+                                        )
+                                        .await;
+                                    }
+
                                     // Listen for vCard response and update user name/flavour_text
                                     {
                                         #[wasm_bindgen]
@@ -194,12 +213,28 @@ pub fn LoginPage() -> impl IntoView {
                                             ) -> JsValue;
                                         }
                                         let set_user_vcard = set_user;
+                                        let own_jid_vcard = jid.clone();
                                         let vcard_cb = wasm_bindgen::closure::Closure::wrap(
                                             Box::new(move |raw: JsValue| {
                                                 if let Ok(envelope) =
                                                     from_value::<serde_json::Value>(raw)
                                                 {
                                                     let payload = &envelope["payload"];
+                                                    // Only handle own vCard (jid empty or matches own JID)
+                                                    let vcard_jid = payload["jid"]
+                                                        .as_str()
+                                                        .unwrap_or("")
+                                                        .to_string();
+                                                    let own_bare = own_jid_vcard
+                                                        .split('/')
+                                                        .next()
+                                                        .unwrap_or(&own_jid_vcard)
+                                                        .to_string();
+                                                    if !vcard_jid.is_empty()
+                                                        && vcard_jid != own_bare
+                                                    {
+                                                        return;
+                                                    }
                                                     let nickname = payload["nickname"]
                                                         .as_str()
                                                         .unwrap_or("")
@@ -318,7 +353,10 @@ pub fn LoginPage() -> impl IntoView {
             </div>
         </Show>
         <div id="login_container">
-            <div id="login_title">"NTO"</div>
+            <div id="login_title">
+                <span id="login_welcome">"Welcome to"</span>
+                "NTO"
+            </div>
             <div id="login_avatar">
                 <div
                     id="login_avatar_img"

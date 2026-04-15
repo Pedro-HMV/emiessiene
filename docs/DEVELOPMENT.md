@@ -1,6 +1,8 @@
 # Development Guide
 
-This guide provides detailed instructions for developing the NTO project.
+This guide provides detailed instructions for developing, packaging, and deploying the NTO project.
+
+The project is a Tauri v1 + Leptos 0.8 WASM desktop app. The backend handles XMPP connectivity (via `tokio-xmpp`), persists login preferences to the OS app-data folder, and exposes Tauri commands to the frontend. The frontend is a reactive WASM app rendered inside a WebView2 window.
 
 ## 📋 Prerequisites
 
@@ -51,16 +53,17 @@ This guide provides detailed instructions for developing the NTO project.
 
 ```
 src/
-├── app.rs                     # Main application entry and routing
+├── app.rs                     # Main application entry, routing, and global signal context
 ├── main.rs                    # WASM entry point
 ├── components.rs              # Component module exports
 └── components/
-    ├── models.rs              # Shared data structures
-    ├── loginpage_component.rs # Login interface
-    ├── mainpage_component.rs  # Main application view
-    ├── chat_component.rs      # Chat conversation UI
-    ├── friend_component.rs    # Friend list items
-    └── message_component.rs   # Message display
+    ├── models.rs              # Shared data structures (User, Friend, Availability)
+    ├── loginpage_component.rs # Login interface (XMPP connect, remember me, auto sign-in)
+    ├── register_component.rs  # Account registration (XEP-0077 in-band registration)
+    ├── mainpage_component.rs  # Friends list, XMPP listeners, sign out, vCard, presence
+    ├── chat_component.rs      # Chat window — message history, input, avatars
+    ├── friend_component.rs    # Friend list item component
+    └── message_component.rs  # Message bubble display
 ```
 
 ### Backend Structure (`src-tauri/`)
@@ -68,14 +71,16 @@ src/
 ```
 src-tauri/
 ├── src/
-│   └── main.rs               # Tauri application and API commands
+│   ├── main.rs               # Tauri commands, AppState, XMPP bridge
+│   └── xmpp_manager.rs       # XMPP connection, event loop, roster, vCard, presence
 ├── Cargo.toml                # Backend dependencies and metadata
-├── tauri.conf.json           # Tauri configuration
+├── tauri.conf.json           # Tauri configuration (min window size, identifier)
 ├── build.rs                  # Build script
-├── user.json                 # User data (development)
-├── friends.json              # Friends data (development)
 └── icons/                    # Application icons
 ```
+
+> Note: `user.json` and `friends.json` are no longer used. Friends are populated at runtime
+> from the XMPP roster. Login credentials are stored in `%APPDATA%\nto\nto_remembered.json`.
 
 ### Configuration Files
 
@@ -136,11 +141,17 @@ cd ..
 
 #### Build Production Version
 ```powershell
-# Create production build
+# Create production build (Windows installer)
 cargo tauri build
 
-# Output location: src-tauri/target/release/bundle/
+# Output:
+#   src-tauri/target/release/bundle/nsis/*.exe  (NSIS installer)
+#   src-tauri/target/release/bundle/msi/*.msi   (MSI installer)
 ```
+
+No code changes are needed between dev and release builds — `#[cfg(not(debug_assertions))]`
+switches automatically. Before shipping, verify `tauri.conf.json` has the correct
+`identifier`, `productName`, and `version`.
 
 ## 🔧 Development Commands
 
@@ -465,30 +476,150 @@ fn test_component() {
 - Cache frequently accessed data
 - Optimize JSON parsing and serialization
 
-## 📦 Deployment
+## 📦 Packaging & Distribution
 
-### Building for Release
+### Building the Windows Installer
 
 ```powershell
-# Create optimized build
-cargo tauri build --release
-
-# The output will be in:
-# src-tauri/target/release/bundle/nsis/ (Windows installer)
-# src-tauri/target/release/bundle/msi/ (MSI installer)
+cargo tauri build
 ```
 
-### Distribution
+Output artifacts (ready to distribute):
+- `src-tauri/target/release/bundle/nsis/*.exe` — NSIS installer
+- `src-tauri/target/release/bundle/msi/*.msi` — MSI installer
 
-1. **Windows**
-   - Use NSIS or MSI installer
-   - Consider code signing for security
-   - Test on different Windows versions
+No code changes are needed between dev and release — `#[cfg(not(debug_assertions))]` handles it automatically.
 
-2. **Cross-platform**
-   - Build on respective platforms
-   - Use GitHub Actions for CI/CD
-   - Maintain platform-specific configurations
+**Before releasing**, verify in `src-tauri/tauri.conf.json`:
+- `identifier` — reverse-domain app identifier
+- `productName` — shown to users in Windows installer
+- `version` — bumped appropriately
+
+### Testing the Release Build Locally
+
+```powershell
+# Build without bundling (faster iteration)
+cargo build --release -p nto
+
+# Run the release binary directly
+.\target\release\emiessiene.exe
+```
+
+---
+
+## 🌐 XMPP Server Setup (for Testing & Production)
+
+NTO requires a real XMPP server. For personal/small-scale use, Oracle Cloud Always Free provides a permanently free ARM VM large enough to run Prosody indefinitely.
+
+### Oracle Cloud Free Tier VM (Recommended)
+
+**Spec**: VM.Standard.A1.Flex — 4 OCPUs, 24 GB RAM, 200 GB disk, 10 TB/month outbound — **free forever**.
+
+#### One-time VM provisioning
+
+1. Create an Oracle Cloud account at [cloud.oracle.com](https://cloud.oracle.com) and choose a home region.
+2. Compute → Instances → Create Instance → Shape: **VM.Standard.A1.Flex** → 4 OCPUs, 24 GB RAM.
+3. OS: **Ubuntu 22.04 LTS** (Always Free eligible). Generate and download the SSH key pair.
+4. In the VCN Security List, add Ingress rules:
+   - TCP 22 (SSH)
+   - TCP 5222 (XMPP STARTTLS)
+   - TCP 5223 (XMPP direct-TLS)
+
+#### Install and configure Prosody
+
+```bash
+sudo apt update && sudo apt install prosody -y
+```
+
+Minimal `/etc/prosody/prosody.cfg.lua`:
+
+```lua
+VirtualHost "your-domain.com"
+  ssl = {
+    key = "/etc/prosody/certs/your-domain.com.key",
+    certificate = "/etc/prosody/certs/your-domain.com.crt"
+  }
+  -- For LAN/dev testing with a raw IP, use the IP as the domain name
+
+modules_enabled = {
+  "saslauth", "roster", "vcard", "register",
+  "ping", "dialback", "carbons", "private",
+}
+
+allow_registration = true  -- disable once accounts are created
+```
+
+Generate a self-signed cert (for testing — replace with Let's Encrypt for production):
+
+```bash
+sudo prosodyctl cert generate your-domain.com
+sudo systemctl restart prosody
+```
+
+Create accounts:
+
+```bash
+sudo prosodyctl register alice your-domain.com password123
+sudo prosodyctl register bob   your-domain.com password456
+```
+
+NTO login JID format: `alice@your-domain.com`
+
+#### Keepalive cron (mandatory — prevents Oracle reclaiming idle VMs)
+
+Oracle reclaims VMs if CPU/network/memory stays below 20% for 7 consecutive days.
+
+```bash
+# /etc/cron.d/oci-keepalive
+0 */6 * * * root dd if=/dev/urandom of=/tmp/kv bs=1M count=50 2>/dev/null && rm /tmp/kv
+```
+
+#### Backup Prosody data to OCI Object Storage
+
+OCI gives 20 GB of Object Storage that **survives VM deletion** (it's separate infrastructure). Back up `/var/lib/prosody/` daily.
+
+```bash
+#!/bin/bash
+# /usr/local/bin/backup-prosody.sh
+DATE=$(date +%Y%m%d)
+tar czf /tmp/prosody-$DATE.tar.gz /var/lib/prosody/
+oci os object put \
+  --bucket-name prosody-backups \
+  --file /tmp/prosody-$DATE.tar.gz \
+  --name prosody-$DATE.tar.gz
+rm /tmp/prosody-$DATE.tar.gz
+```
+
+```bash
+# /etc/cron.d/prosody-backup
+0 3 * * * root /usr/local/bin/backup-prosody.sh
+```
+
+#### Recovery after VM loss
+
+```bash
+# 1. Spin up a new free ARM VM and install Prosody
+# 2. Download latest backup:
+oci os object get --bucket-name prosody-backups --name prosody-YYYYMMDD.tar.gz --file /tmp/r.tar.gz
+# 3. Restore:
+sudo tar xzf /tmp/r.tar.gz -C /
+sudo chown -R prosody:prosody /var/lib/prosody
+sudo systemctl restart prosody
+```
+
+Maximum data loss: 24 hours (with daily backups).
+
+### Cost Comparison
+
+| Option | Cost | Notes |
+|---|---|---|
+| Oracle Cloud ARM A1 | **$0/month** | Always Free; keepalive cron required |
+| Linode Nanode 1 GB | $5/month | No idle-reclamation risk; zero maintenance |
+| Linode 2 GB | $12/month | Comfortable headroom for OS + Prosody |
+
+For a personal project, Oracle Free is the obvious choice. For reliability without any maintenance overhead, the $5 Linode Nanode is sufficient.
+
+---
 
 ## 🤝 Contribution Guidelines
 

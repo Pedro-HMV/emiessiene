@@ -23,7 +23,9 @@
         "title": "NTO - alpha version",
         "fullscreen": false,
         "width": 1080,
-        "height": 720
+        "height": 720,
+        "minWidth": 440,
+        "minHeight": 500
       }
     ],
     "security": {

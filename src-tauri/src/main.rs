@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{env, fmt::Display, fs::File, io::BufReader, sync::Mutex};
+use std::{env, fmt::Display, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
@@ -65,14 +65,6 @@ impl Friend {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct FriendJson {
-    name: String,
-    email: String,
-    flavour_text: String,
-    availability: String,
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Availability {
     Online,
@@ -114,14 +106,16 @@ fn read_profile_data(app_handle: &tauri::AppHandle) -> serde_json::Value {
     }
 }
 
-fn write_profile_data(app_handle: &tauri::AppHandle, json: &serde_json::Value) -> Result<(), String> {
+fn write_profile_data(
+    app_handle: &tauri::AppHandle,
+    json: &serde_json::Value,
+) -> Result<(), String> {
     let config = app_handle.config();
     let data_dir = tauri::api::path::app_data_dir(&config)
         .ok_or_else(|| "Failed to get app data directory".to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let file_path = data_dir.join("nto_remembered.json");
-    std::fs::write(&file_path, serde_json::to_string(json).unwrap())
-        .map_err(|e| e.to_string())
+    std::fs::write(&file_path, serde_json::to_string(json).unwrap()).map_err(|e| e.to_string())
 }
 
 impl AppState {
@@ -150,41 +144,19 @@ impl Display for AppState {
     }
 }
 
-fn load_friends_list(file_path: &str) -> Result<Vec<Friend>, Box<dyn std::error::Error>> {
-    log::info!("Loading friends list from {}", file_path);
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let json: Vec<FriendJson> = serde_json::from_reader(reader)?;
-
-    let friends: Vec<Friend> = json
-        .into_iter()
-        .map(|f| Friend {
-            name: f.name,
-            email: f.email,
-            flavour_text: f.flavour_text,
-            availability: match f.availability.as_str() {
-                "Online" => Availability::Online,
-                "Away" => Availability::Away,
-                "Busy" => Availability::Busy,
-                _ => Availability::Offline,
-            },
-        })
-        .collect();
-
-    log::info!("Loaded {} friends", friends.len());
-    Ok(friends)
-}
-
 fn init_state() -> AppState {
     log::info!("Initializing application state");
-    let friends = load_friends_list("friends.json").expect("Failed to load friends list");
+    // Friends are populated at runtime from the XMPP roster — no static file needed.
     let user = User {
         name: "".into(),
         email: "".into(),
         flavour_text: "".into(),
         availability: Availability::Offline,
     };
-    AppState { user, friends }
+    AppState {
+        user,
+        friends: Vec::new(),
+    }
 }
 
 fn main() {
@@ -226,6 +198,8 @@ fn main() {
             xmpp_register,
             save_login_prefs,
             xmpp_fetch_vcard,
+            xmpp_fetch_contact_vcard,
+            xmpp_get_presence_cache,
             get_pending_subscriptions,
             xmpp_accept_subscription,
             xmpp_deny_subscription,
@@ -261,6 +235,11 @@ async fn update_username(
         let desc = user.flavour_text.clone();
         if let Err(e) = xmpp.set_vcard(name, desc).await {
             log::warn!("Failed to update vCard via XMPP: {}", e);
+        }
+        // Broadcast presence so contacts receive a presence stanza,
+        // triggering their xmpp_fetch_contact_vcard and seeing the new name.
+        if let Err(e) = xmpp.broadcast_presence().await {
+            log::warn!("Failed to broadcast presence after username update: {}", e);
         }
     }
     Ok(user)
@@ -330,9 +309,20 @@ async fn update_flavour_text(
         if let Err(e) = xmpp.set_vcard(nickname, desc).await {
             log::warn!("Failed to update vCard DESC via XMPP: {}", e);
         }
-        let status = if flavour_text.is_empty() { None } else { Some(flavour_text) };
+        let status = if flavour_text.is_empty() {
+            None
+        } else {
+            Some(flavour_text)
+        };
         if let Err(e) = xmpp.set_presence(availability, status).await {
             log::warn!("Failed to update XMPP presence status text: {}", e);
+        }
+        // Broadcast presence so contacts fetch contact vCard and see new flavour text.
+        if let Err(e) = xmpp.broadcast_presence().await {
+            log::warn!(
+                "Failed to broadcast presence after flavour text update: {}",
+                e
+            );
         }
     }
     Ok(user)
@@ -349,7 +339,11 @@ async fn update_availability(
         let mut app = state.lock().expect("Failed to lock state");
         app.user.availability = availability.clone();
         let user = app.user.clone();
-        let ft = if user.flavour_text.is_empty() { None } else { Some(user.flavour_text.clone()) };
+        let ft = if user.flavour_text.is_empty() {
+            None
+        } else {
+            Some(user.flavour_text.clone())
+        };
         (user, ft)
     };
     // Send updated XMPP presence (skip for Offline — that's handled by disconnect)
@@ -375,7 +369,10 @@ fn get_saved_profile(app_handle: tauri::AppHandle) -> Result<SavedProfile, Strin
         jid: json["jid"].as_str().unwrap_or("").to_string(),
         remember_me: json["remember_me"].as_bool().unwrap_or(false),
         auto_sign_in: json["auto_sign_in"].as_bool().unwrap_or(false),
-        last_availability: json["last_availability"].as_str().unwrap_or("Online").to_string(),
+        last_availability: json["last_availability"]
+            .as_str()
+            .unwrap_or("Online")
+            .to_string(),
     })
 }
 
@@ -415,7 +412,7 @@ async fn xmpp_connect(
     log::info!("XMPP connect command called for JID: {}", jid);
     let mut xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.set_app_handle(app_handle);
-    
+
     match xmpp_manager.connect(jid, password).await {
         Ok(_) => {
             log::info!("XMPP connection successful");
@@ -450,7 +447,7 @@ async fn xmpp_send_message(
 ) -> Result<serde_json::Value, String> {
     log::info!("XMPP send message command called for: {}", to_jid);
     let xmpp_manager = xmpp_state.lock().await;
-    
+
     match xmpp_manager.send_message(to_jid, body).await {
         Ok(_) => {
             log::info!("Message sent successfully via XMPP");
@@ -514,6 +511,25 @@ async fn xmpp_fetch_vcard(xmpp_state: State<'_, XmppState>) -> Result<String, St
 }
 
 #[command]
+async fn xmpp_fetch_contact_vcard(
+    xmpp_state: State<'_, XmppState>,
+    jid: String,
+) -> Result<String, String> {
+    log::info!("xmpp_fetch_contact_vcard command called for {}", jid);
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.fetch_contact_vcard(jid).await?;
+    Ok("Contact vCard request sent".to_string())
+}
+
+#[command]
+async fn xmpp_get_presence_cache(
+    xmpp_state: State<'_, XmppState>,
+) -> Result<Vec<xmpp_manager::XmppPresence>, String> {
+    let xmpp_manager = xmpp_state.lock().await;
+    Ok(xmpp_manager.get_presence_cache().await)
+}
+
+#[command]
 async fn xmpp_accept_subscription(
     xmpp_state: State<'_, XmppState>,
     jid: String,
@@ -552,17 +568,17 @@ async fn xmpp_get_connection_status(
 // Phase E: In-band Registration (XEP-0077)
 // Connects via direct TLS, sends IBR IQ get/set, returns result.
 #[command]
-async fn xmpp_register(
-    jid: String,
-    password: String,
-) -> Result<serde_json::Value, String> {
+async fn xmpp_register(jid: String, password: String) -> Result<serde_json::Value, String> {
     use std::collections::BTreeMap;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_xmpp::parsers::ibr::Query as IbrQuery;
     use tokio_xmpp::parsers::iq::Iq as RegIq;
 
-    log::info!("xmpp_register: attempting IBR registration for JID: {}", jid);
+    log::info!(
+        "xmpp_register: attempting IBR registration for JID: {}",
+        jid
+    );
 
     // Parse domain and username from the JID
     let bare_jid: jid::BareJid = jid
@@ -583,7 +599,9 @@ async fn xmpp_register(
         let mut builder = native_tls::TlsConnector::builder();
         #[cfg(debug_assertions)]
         builder.danger_accept_invalid_certs(true);
-        builder.build().map_err(|e| format!("TLS connector creation failed: {}", e))?
+        builder
+            .build()
+            .map_err(|e| format!("TLS connector creation failed: {}", e))?
     };
     let connector = tokio_native_tls::TlsConnector::from(native_connector);
     let mut stream = connector
@@ -615,7 +633,10 @@ async fn xmpp_register(
     if !features.contains("jabber:iq:register")
         && !features.contains("http://jabber.org/features/iq-register")
     {
-        log::warn!("xmpp_register: server {} does not advertise IBR support", domain);
+        log::warn!(
+            "xmpp_register: server {} does not advertise IBR support",
+            domain
+        );
         return Ok(serde_json::json!({
             "success": false,
             "error": "Server does not support in-band registration"

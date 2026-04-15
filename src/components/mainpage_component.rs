@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::web_sys::HtmlInputElement;
 use leptos_router::components::A;
+use leptos_router::hooks::use_navigate;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
@@ -31,8 +32,14 @@ struct SubscriptionArgs {
     jid: String,
 }
 
+#[derive(Serialize)]
+struct FetchContactVcardArgs {
+    jid: String,
+}
+
 #[component]
 pub fn MainPage() -> impl IntoView {
+    let navigate = use_navigate();
     let (editing_user, set_editing_user) = signal(false);
     let (editing_flavour_text, set_editing_flavour_text) = signal(false);
     let (editing_availability, set_editing_availability) = signal(false);
@@ -67,7 +74,12 @@ pub fn MainPage() -> impl IntoView {
         }
         set_add_friend_status.set(Some("Sending request...".to_string()));
         spawn_local(async move {
-            match invoke_catching("xmpp_add_contact", to_value(&AddContactArgs { jid: jid.clone() }).unwrap()).await {
+            match invoke_catching(
+                "xmpp_add_contact",
+                to_value(&AddContactArgs { jid: jid.clone() }).unwrap(),
+            )
+            .await
+            {
                 Ok(_) => {
                     set_add_friend_status.set(Some(format!("Friend request sent to {}", jid)));
                     set_add_friend_jid.set(String::new());
@@ -106,46 +118,13 @@ pub fn MainPage() -> impl IntoView {
         });
     }
 
-    // Fetch any subscription requests that arrived before this page mounted
-    {
-        spawn_local(async move {
-            let result = invoke(
-                "get_pending_subscriptions",
-                to_value(&serde_json::json!({})).unwrap(),
-            )
-            .await;
-            if let Ok(jids) = from_value::<Vec<String>>(result) {
-                if !jids.is_empty() {
-                    set_pending_requests.update(|reqs| {
-                        for jid in jids {
-                            if !reqs.contains(&jid) {
-                                reqs.push(jid);
-                            }
-                        }
-                    });
-                }
-            }
-        });
-    }
-
-    // Re-request the roster now that listeners are mounted.
-    // The initial roster fetch happens right after login, but the page isn't
-    // mounted yet at that point — this call ensures we always get fresh data.
-    {
-        spawn_local(async move {
-            let _ = invoke(
-                "xmpp_request_roster",
-                to_value(&serde_json::json!({})).unwrap(),
-            )
-            .await;
-        });
-    }
-
     // Set up XMPP event listeners
     {
         let set_connection_status = set_connection_status;
         let set_friends = set_friends;
         let set_pending_requests = set_pending_requests;
+        let user = user;
+        let set_user = set_user;
         spawn_local(async move {
             // Import Tauri's event listening capability
             #[wasm_bindgen]
@@ -171,7 +150,8 @@ pub fn MainPage() -> impl IntoView {
             })
                 as Box<dyn Fn(JsValue)>);
 
-            // Roster received: replace friends list with real XMPP roster entries
+            // Roster received: replace friends list with real XMPP roster entries,
+            // then immediately replay presence cache so online contacts appear correctly.
             let roster_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_friends = set_friends;
                 move |raw: JsValue| {
@@ -201,16 +181,86 @@ pub fn MainPage() -> impl IntoView {
                                 }
                             }
                             // Sort both lists A→Z by display name
-                            online.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                            offline.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            online
+                                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            offline
+                                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                             set_friends.set((online, offline));
+                            // Immediately replay presence cache so contacts who are already
+                            // online appear correctly. The roster response always resets
+                            // everyone to Offline — this corrects it in the same microtask.
+                            let set_friends = set_friends;
+                            spawn_local(async move {
+                                let cached = invoke(
+                                    "xmpp_get_presence_cache",
+                                    to_value(&serde_json::json!({})).unwrap(),
+                                )
+                                .await;
+                                if let Ok(presences) = from_value::<Vec<serde_json::Value>>(cached)
+                                {
+                                    for p in presences {
+                                        let jid = p["jid"].as_str().unwrap_or("").to_string();
+                                        let avail_str =
+                                            p["availability"].as_str().unwrap_or("Offline");
+                                        let new_avail = match avail_str {
+                                            "Online" => Availability::Online,
+                                            "Away" => Availability::Away,
+                                            "Busy" => Availability::Busy,
+                                            _ => Availability::Offline,
+                                        };
+                                        if jid.is_empty() {
+                                            continue;
+                                        }
+                                        set_friends.update(|(online, offline)| {
+                                            let target =
+                                                online.iter_mut().find(|f| f.email == jid).or_else(
+                                                    || offline.iter_mut().find(|f| f.email == jid),
+                                                );
+                                            if let Some(f) = target {
+                                                f.availability = new_avail.clone();
+                                            }
+                                            let all: Vec<Friend> =
+                                                online.drain(..).chain(offline.drain(..)).collect();
+                                            for f in all {
+                                                if matches!(f.availability, Availability::Offline) {
+                                                    offline.push(f);
+                                                } else {
+                                                    online.push(f);
+                                                }
+                                            }
+                                            online.sort_by(|a, b| {
+                                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                            });
+                                            offline.sort_by(|a, b| {
+                                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                            });
+                                        });
+                                        // Roster gives us the JID local-part as display name, not the
+                                        // vCard nickname. For every already-online contact restored from
+                                        // the cache, fetch their vCard now so the real nickname appears.
+                                        if !matches!(new_avail, Availability::Offline) {
+                                            let jid_clone = jid.clone();
+                                            spawn_local(async move {
+                                                let _ = invoke(
+                                                    "xmpp_fetch_contact_vcard",
+                                                    to_value(&FetchContactVcardArgs {
+                                                        jid: jid_clone,
+                                                    })
+                                                    .unwrap(),
+                                                )
+                                                .await;
+                                            });
+                                        }
+                                    }
+                                }
+                            });
                         }
                     }
                 }
             })
                 as Box<dyn Fn(JsValue)>);
 
-            // Presence update: move friend between lists and update status text
+            // Presence update: move friend between lists, update status, and fetch contact vCard
             let presence_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_friends = set_friends;
                 move |raw: JsValue| {
@@ -245,13 +295,81 @@ pub fn MainPage() -> impl IntoView {
                                     online.push(f);
                                 }
                             }
-                            online.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                            offline.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            online
+                                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            offline
+                                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         });
+                        // Fetch contact vCard on every presence event so name/flavour_text
+                        // stays current (handles renames while we're online).
+                        if !bare_jid.is_empty() {
+                            let jid_for_vcard = bare_jid.clone();
+                            spawn_local(async move {
+                                let _ = invoke_catching(
+                                    "xmpp_fetch_contact_vcard",
+                                    to_value(&FetchContactVcardArgs { jid: jid_for_vcard })
+                                        .unwrap(),
+                                )
+                                .await;
+                            });
+                        }
                     }
                 }
             })
                 as Box<dyn Fn(JsValue)>);
+
+            // vCard received: update own user info OR a contact's name/flavour_text
+            let vcard_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
+                let set_friends = set_friends;
+                let user = user;
+                let set_user = set_user;
+                move |raw: JsValue| {
+                    if let Ok(envelope) = from_value::<serde_json::Value>(raw) {
+                        let payload = &envelope["payload"];
+                        let vcard_jid = payload["jid"].as_str().unwrap_or("").to_string();
+                        let nickname = payload["nickname"].as_str().unwrap_or("").to_string();
+                        let flavour_text =
+                            payload["flavour_text"].as_str().unwrap_or("").to_string();
+                        let own_bare = user
+                            .get_untracked()
+                            .email
+                            .split('/')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        if vcard_jid.is_empty() || vcard_jid == own_bare {
+                            // Own vCard — update user header
+                            set_user.update(|u| {
+                                if !nickname.is_empty() {
+                                    u.name = nickname;
+                                }
+                                u.flavour_text = flavour_text;
+                            });
+                        } else {
+                            // Contact vCard — update matching friend's name and flavour_text
+                            set_friends.update(|(online, offline)| {
+                                let target = online
+                                    .iter_mut()
+                                    .find(|f| f.email == vcard_jid)
+                                    .or_else(|| offline.iter_mut().find(|f| f.email == vcard_jid));
+                                if let Some(f) = target {
+                                    if !nickname.is_empty() {
+                                        f.name = nickname;
+                                    }
+                                    f.flavour_text = flavour_text;
+                                }
+                            });
+                        }
+                    }
+                }
+            })
+                as Box<dyn Fn(JsValue)>);
+
+            let _ = listen(
+                "xmpp_vcard_received",
+                vcard_callback.as_ref().unchecked_ref(),
+            )
+            .await;
 
             let _ = listen(
                 "xmpp_connected",
@@ -287,11 +405,21 @@ pub fn MainPage() -> impl IntoView {
                         if from_jid.is_empty() {
                             return;
                         }
-                        // Skip if we already have this contact in the friends list
+                        // If this JID is already in our friends list, they are sending a
+                        // counter-subscribe (we initiated the friendship first). Auto-accept
+                        // so the subscription becomes mutual without requiring a second manual step.
                         let (online, offline) = friends.get_untracked();
                         let already_friend = online.iter().any(|f| f.email == from_jid)
                             || offline.iter().any(|f| f.email == from_jid);
                         if already_friend {
+                            let jid = from_jid.clone();
+                            spawn_local(async move {
+                                let _ = invoke_catching(
+                                    "xmpp_accept_subscription",
+                                    to_value(&SubscriptionArgs { jid }).unwrap(),
+                                )
+                                .await;
+                            });
                             return;
                         }
                         set_pending_requests.update(|reqs| {
@@ -301,7 +429,8 @@ pub fn MainPage() -> impl IntoView {
                         });
                     }
                 }
-            }) as Box<dyn Fn(JsValue)>);
+            })
+                as Box<dyn Fn(JsValue)>);
             let _ = listen(
                 "xmpp_subscription_request",
                 subscription_callback.as_ref().unchecked_ref(),
@@ -347,7 +476,8 @@ pub fn MainPage() -> impl IntoView {
                         }
                     }
                 }
-            }) as Box<dyn Fn(JsValue)>);
+            })
+                as Box<dyn Fn(JsValue)>);
             let _ = listen(
                 "xmpp_roster_push",
                 roster_push_callback.as_ref().unchecked_ref(),
@@ -358,8 +488,40 @@ pub fn MainPage() -> impl IntoView {
             disconnected_callback.forget();
             roster_callback.forget();
             presence_callback.forget();
+            vcard_callback.forget();
             subscription_callback.forget();
             roster_push_callback.forget();
+
+            // Now that all listeners are registered, request data that may have
+            // been emitted before this page mounted and its listeners were ready.
+            // These calls MUST come after all listen() calls above.
+            // NOTE: xmpp_get_presence_cache is called inside roster_callback, not here,
+            // because the roster response arrives async and resets all friends to Offline —
+            // the cache must be replayed AFTER that reset, not before.
+            let _ = invoke(
+                "xmpp_request_roster",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
+            let _ = invoke(
+                "xmpp_fetch_vcard",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
+            let result = invoke(
+                "get_pending_subscriptions",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
+            if let Ok(jids) = from_value::<Vec<String>>(result) {
+                for jid in jids {
+                    set_pending_requests.update(|reqs| {
+                        if !reqs.contains(&jid) {
+                            reqs.push(jid);
+                        }
+                    });
+                }
+            }
         });
     }
 
@@ -504,11 +666,7 @@ pub fn MainPage() -> impl IntoView {
                 <div id="header_container" class="flex-row p-10 border-st">
                     <div id="header_left">
                         <div id="header_avatar">
-                            <div
-                                id="avatar_img"
-                                style="width: 90px; height: 90px;"
-                            >
-                            </div>
+                            <div id="avatar_img" style="width: 90px; height: 90px;"></div>
                         </div>
                     </div>
                     <div id="header_right" class="ml-1">
@@ -627,7 +785,18 @@ pub fn MainPage() -> impl IntoView {
                                 <span class="xmpp-label">{move || connection_status.get()}</span>
                                 <span class="status-sep">"|"</span>
                                 <span class="sign-out-link">
-                                    <A href="/">"Sign Out"</A>
+                                    <button
+                                        class="sign-out-link"
+                                        style="background:none;border:none;padding:0;cursor:pointer;font:inherit;"
+                                        on:click=move |_| {
+                                            if let Some(sign_out) = use_context::<Callback<()>>() {
+                                                sign_out.run(());
+                                            }
+                                            navigate("/", Default::default());
+                                        }
+                                    >
+                                        "Sign Out"
+                                    </button>
                                 </span>
                             </div>
                         </div>
@@ -646,22 +815,38 @@ pub fn MainPage() -> impl IntoView {
                         if ev.key() == "Enter" {
                             ev.prevent_default();
                             let jid = add_friend_jid.get_untracked().trim().to_string();
-                            if jid.is_empty() { return; }
+                            if jid.is_empty() {
+                                return;
+                            }
                             set_add_friend_status.set(Some("Sending request...".to_string()));
                             spawn_local(async move {
-                                match invoke_catching("xmpp_add_contact", to_value(&AddContactArgs { jid: jid.clone() }).unwrap()).await {
+                                match invoke_catching(
+                                        "xmpp_add_contact",
+                                        to_value(&AddContactArgs { jid: jid.clone() }).unwrap(),
+                                    )
+                                    .await
+                                {
                                     Ok(_) => {
-                                        set_add_friend_status.set(Some(format!("Friend request sent to {}", jid)));
+                                        set_add_friend_status
+                                            .set(Some(format!("Friend request sent to {}", jid)));
                                         set_add_friend_jid.set(String::new());
                                     }
-                                    Err(e) => set_add_friend_status.set(Some(format!("Error: {:?}", e))),
+                                    Err(e) => {
+                                        set_add_friend_status.set(Some(format!("Error: {:?}", e)))
+                                    }
                                 }
                             });
                         }
                     }
                 />
-                <button on:click=add_friend title="Add friend">"➕"</button>
-                {move || add_friend_status.get().map(|s| view! { <span class="add-friend-status">{s}</span> })}
+                <button on:click=add_friend title="Add friend">
+                    "➕"
+                </button>
+                {move || {
+                    add_friend_status
+                        .get()
+                        .map(|s| view! { <span class="add-friend-status">{s}</span> })
+                }}
             </div>
             <div id="friends-container" class="flex-col flex-grow bg-white auto-y">
                 // Pending friend requests section (styled like Friends/Offline groups)
@@ -680,7 +865,11 @@ pub fn MainPage() -> impl IntoView {
                                 let jid_accept = jid.clone();
                                 let jid_deny = jid.clone();
                                 let set_pending_requests = set_pending_requests;
-                                let display_name = jid.split('@').next().unwrap_or(&jid).to_string();
+                                let display_name = jid
+                                    .split('@')
+                                    .next()
+                                    .unwrap_or(&jid)
+                                    .to_string();
                                 view! {
                                     <li class="pending-item">
                                         <span class="pending-avatar">"👤"</span>
@@ -691,13 +880,43 @@ pub fn MainPage() -> impl IntoView {
                                             on:click=move |_| {
                                                 let jid = jid_accept.clone();
                                                 let set_pending_requests = set_pending_requests;
+                                                let set_friends = set_friends;
                                                 spawn_local(async move {
                                                     let _ = invoke_catching(
-                                                        "xmpp_accept_subscription",
-                                                        to_value(&SubscriptionArgs { jid: jid.clone() }).unwrap(),
-                                                    )
-                                                    .await;
-                                                    set_pending_requests.update(|reqs| reqs.retain(|j| j != &jid));
+                                                            "xmpp_accept_subscription",
+                                                            to_value(
+                                                                    &SubscriptionArgs {
+                                                                        jid: jid.clone(),
+                                                                    },
+                                                                )
+                                                                .unwrap(),
+                                                        )
+                                                        .await;
+                                                    set_pending_requests
+                                                        .update(|reqs| reqs.retain(|j| j != &jid));
+                                                    set_friends
+                                                        .update(|(online, offline)| {
+                                                            let exists = online.iter().any(|f| f.email == jid)
+                                                                || offline.iter().any(|f| f.email == jid);
+                                                            if !exists {
+                                                                let name = jid
+                                                                    .split('@')
+                                                                    .next()
+                                                                    .unwrap_or(&jid)
+                                                                    .to_string();
+                                                                offline
+                                                                    .push(Friend {
+                                                                        name,
+                                                                        email: jid.clone(),
+                                                                        flavour_text: String::new(),
+                                                                        availability: Availability::Offline,
+                                                                    });
+                                                                offline
+                                                                    .sort_by(|a, b| {
+                                                                        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                                                    });
+                                                            }
+                                                        });
                                                 });
                                             }
                                         >
@@ -711,11 +930,17 @@ pub fn MainPage() -> impl IntoView {
                                                 let set_pending_requests = set_pending_requests;
                                                 spawn_local(async move {
                                                     let _ = invoke_catching(
-                                                        "xmpp_deny_subscription",
-                                                        to_value(&SubscriptionArgs { jid: jid.clone() }).unwrap(),
-                                                    )
-                                                    .await;
-                                                    set_pending_requests.update(|reqs| reqs.retain(|j| j != &jid));
+                                                            "xmpp_deny_subscription",
+                                                            to_value(
+                                                                    &SubscriptionArgs {
+                                                                        jid: jid.clone(),
+                                                                    },
+                                                                )
+                                                                .unwrap(),
+                                                        )
+                                                        .await;
+                                                    set_pending_requests
+                                                        .update(|reqs| reqs.retain(|j| j != &jid));
                                                 });
                                             }
                                         >
@@ -754,13 +979,16 @@ pub fn MainPage() -> impl IntoView {
                         each=move || offline_friends()
                         key=|f| f.email.clone()
                         children=move |friend| {
+                            let jid = friend.email.clone();
                             view! {
                                 <li>
-                                    <Friend
-                                        availability=signal(friend.availability).0
-                                        name=signal(friend.name).0
-                                        flavour_text=signal(friend.flavour_text).0
-                                    />
+                                    <A href=move || format!("/chat/{}", jid)>
+                                        <Friend
+                                            availability=signal(friend.availability).0
+                                            name=signal(friend.name).0
+                                            flavour_text=signal(friend.flavour_text).0
+                                        />
+                                    </A>
                                 </li>
                             }
                         }

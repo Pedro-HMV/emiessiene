@@ -2,6 +2,7 @@ use futures::StreamExt;
 use log::{error, info, warn};
 use minidom::Element as MinidomElement;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -50,11 +51,15 @@ enum OutgoingCmd {
         show: Option<String>,
         status_text: Option<String>,
     },
+    BroadcastPresence,
     SetVcard {
         nickname: String,
         desc: String,
     },
     FetchVcard,
+    FetchContactVcard {
+        jid: String,
+    },
     RequestRoster,
     AddContact {
         jid: String,
@@ -163,6 +168,12 @@ pub struct XmppManager {
     connection_status: Arc<Mutex<ConnectionStatus>>,
     app_handle: Option<tauri::AppHandle>,
     pending_subscriptions: Arc<Mutex<Vec<String>>>,
+    /// Cache of last-known presence per bare JID. Populated by the event loop,
+    /// read by `xmpp_get_presence_cache` so MainPage can replay on mount.
+    presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
+    /// Last `show` value sent (None = available/online). Used by BroadcastPresence
+    /// to re-send the correct show value after a vCard change.
+    current_show: Arc<Mutex<Option<String>>>,
 }
 
 impl XmppManager {
@@ -178,6 +189,8 @@ impl XmppManager {
             })),
             app_handle: None,
             pending_subscriptions: Arc::new(Mutex::new(Vec::new())),
+            presence_cache: Arc::new(Mutex::new(HashMap::new())),
+            current_show: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -234,6 +247,8 @@ impl XmppManager {
         let own_jid = jid_str.clone();
 
         let pending_subs_arc = self.pending_subscriptions.clone();
+        let presence_cache_arc = self.presence_cache.clone();
+        let current_show_arc = self.current_show.clone();
 
         // Spawn the background event loop
         let handle = tokio::spawn(xmpp_event_loop(
@@ -244,6 +259,8 @@ impl XmppManager {
             own_jid,
             Some(auth_tx),
             pending_subs_arc,
+            presence_cache_arc,
+            current_show_arc,
         ));
 
         self.sender = Some(tx);
@@ -364,6 +381,39 @@ impl XmppManager {
             .send(OutgoingCmd::FetchVcard)
             .await
             .map_err(|e| format!("Failed to queue vCard fetch: {}", e))
+    }
+
+    pub async fn fetch_contact_vcard(&self, jid: String) -> Result<(), String> {
+        info!("Queueing contact vCard fetch for {}", jid);
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::FetchContactVcard { jid })
+            .await
+            .map_err(|e| format!("Failed to queue contact vCard fetch: {}", e))
+    }
+
+    pub async fn get_presence_cache(&self) -> Vec<XmppPresence> {
+        self.presence_cache.lock().await.values().cloned().collect()
+    }
+
+    pub async fn broadcast_presence(&self) -> Result<(), String> {
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected".to_string());
+            }
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::BroadcastPresence)
+            .await
+            .map_err(|e| format!("Failed to queue broadcast presence: {}", e))
     }
 
     pub async fn accept_subscription(&self, jid: String) -> Result<(), String> {
@@ -489,6 +539,8 @@ async fn xmpp_event_loop(
     own_jid: String,
     mut auth_result: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     pending_subscriptions: Arc<Mutex<Vec<String>>>,
+    presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
+    current_show: Arc<Mutex<Option<String>>>,
 ) {
     loop {
         tokio::select! {
@@ -581,22 +633,30 @@ async fn xmpp_event_loop(
                             _ => None,
                         };
                         if let Some(avail) = availability {
-                            let jid_str = pres.from.map(|j| j.to_string()).unwrap_or_default();
-                            if !jid_str.is_empty() {
-                                let xmpp_pres = XmppPresence {
-                                    jid: jid_str,
-                                    availability: avail,
-                                    status: None,
-                                };
-                                if let Err(e) = app_handle.emit_all("xmpp_presence_update", &xmpp_pres) {
-                                    error!("Failed to emit xmpp_presence_update: {}", e);
+                            let jid_full = pres.from.map(|j| j.to_string()).unwrap_or_default();
+                            if !jid_full.is_empty() {
+                                // Strip resource to get bare JID for cache key
+                                let bare_jid = jid_full.split('/').next().unwrap_or(&jid_full).to_string();
+                                // Skip own presence echoes from the server
+                                let own_bare = own_jid.split('/').next().unwrap_or(&own_jid).to_string();
+                                if bare_jid != own_bare {
+                                    let xmpp_pres = XmppPresence {
+                                        jid: bare_jid.clone(),
+                                        availability: avail,
+                                        status: None,
+                                    };
+                                    // Write to cache so MainPage can replay on mount
+                                    presence_cache.lock().await.insert(bare_jid, xmpp_pres.clone());
+                                    if let Err(e) = app_handle.emit_all("xmpp_presence_update", &xmpp_pres) {
+                                        error!("Failed to emit xmpp_presence_update: {}", e);
+                                    }
                                 }
                             }
                         }
                     }
                     Some(Event::Stanza(Stanza::Iq(iq))) => {
                         match iq {
-                            XmppIq::Result { payload: Some(elem), .. } => {
+                            XmppIq::Result { payload: Some(elem), from: iq_from, .. } => {
                                 if elem.name() == "vCard" && elem.ns() == "vcard-temp" {
                                     let nickname = elem
                                         .get_child("NICKNAME", "vcard-temp")
@@ -608,11 +668,18 @@ async fn xmpp_event_loop(
                                         .and_then(|n| n.texts().next())
                                         .map(|s| s.to_string())
                                         .unwrap_or_default();
+                                    // `from` is set for contact vCards, absent for own vCard
+                                    let vcard_jid = iq_from
+                                        .as_ref()
+                                        .map(|j| j.to_string())
+                                        .map(|j| j.split('/').next().unwrap_or(&j).to_string())
+                                        .unwrap_or_default();
                                     let payload = serde_json::json!({
+                                        "jid": vcard_jid,
                                         "nickname": nickname,
                                         "flavour_text": flavour_text,
                                     });
-                                    info!("vCard received: nickname='{}', desc='{}'", nickname, flavour_text);
+                                    info!("vCard received (jid='{}'): nickname='{}', desc='{}'", vcard_jid, nickname, flavour_text);
                                     if let Err(e) = app_handle.emit_all("xmpp_vcard_received", &payload) {
                                         error!("Failed to emit xmpp_vcard_received: {}", e);
                                     }
@@ -702,6 +769,8 @@ async fn xmpp_event_loop(
                         }
                     }
                     Some(OutgoingCmd::SetPresence { show, status_text }) => {
+                        // Remember the current show value for BroadcastPresence
+                        *current_show.lock().await = show.clone();
                         let mut presence = Presence::available();
                         if let Some(show_str) = show {
                             presence = match show_str.as_str() {
@@ -765,6 +834,38 @@ async fn xmpp_event_loop(
                         };
                         if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
                             error!("Failed to send vCard fetch IQ: {}", e);
+                        }
+                    }
+                    Some(OutgoingCmd::FetchContactVcard { jid }) => {
+                        match jid.parse::<jid::BareJid>() {
+                            Ok(contact_jid) => {
+                                let vcard_ns = "vcard-temp";
+                                let vcard_el = MinidomElement::builder("vCard", vcard_ns).build();
+                                let iq = XmppIq::Get {
+                                    from: None,
+                                    to: Some(jid::Jid::from(contact_jid)),
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    payload: vcard_el,
+                                };
+                                if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
+                                    error!("Failed to send contact vCard fetch IQ: {}", e);
+                                }
+                            }
+                            Err(e) => error!("Invalid JID '{}' for contact vCard fetch: {}", jid, e),
+                        }
+                    }
+                    Some(OutgoingCmd::BroadcastPresence) => {
+                        let show = current_show.lock().await.clone();
+                        let mut presence = Presence::available();
+                        if let Some(show_str) = show {
+                            presence = match show_str.as_str() {
+                                "away" => presence.with_show(Show::Away),
+                                "dnd" => presence.with_show(Show::Dnd),
+                                _ => presence,
+                            };
+                        }
+                        if let Err(e) = client.send_stanza(Stanza::Presence(presence)).await {
+                            error!("Failed to broadcast presence: {}", e);
                         }
                     }
                     Some(OutgoingCmd::AcceptAndSubscribe { jid }) => {

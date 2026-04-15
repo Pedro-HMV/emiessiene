@@ -94,6 +94,20 @@ pub fn App() -> impl IntoView {
         });
     }
 
+    // sign_out: resets all session state so the next login starts clean.
+    // Provided as a context so any component (MainPage) can call it.
+    let sign_out = Callback::new(move |_: ()| {
+        set_user.set(User {
+            name: String::new(),
+            email: String::new(),
+            flavour_text: String::new(),
+            availability: Availability::Offline,
+        });
+        set_friends.set((Vec::new(), Vec::new()));
+        set_open_chats.set(Vec::new());
+        messages.set(HashMap::new());
+    });
+
     provide_context(user);
     provide_context(set_user);
     provide_context(friends);
@@ -101,6 +115,7 @@ pub fn App() -> impl IntoView {
     provide_context(open_chats);
     provide_context(set_open_chats);
     provide_context(messages);
+    provide_context(sign_out);
 
     view! {
         <Router>

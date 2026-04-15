@@ -424,12 +424,12 @@ ul {
 
 .container {
   margin: 0;
+  height: 100vh;          /* chat page: fill viewport */
   display: flex;
   flex-direction: column;
-  justify-content: center;
   min-width: 320px; /* Prevent breaking on very small screens */
   max-width: 100vw;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 div {
@@ -492,31 +492,38 @@ button {
 .chat-and-avatars {
   display: flex;
   justify-content: space-between;
-  gap: 20px; /* Consistent gap between columns */
-  padding: 0 20px; /* Equal padding on both sides */
+  gap: 8px;          /* gap between left column and avatar column */
+  padding: 0;        /* outer padding is on .chat_container */
   box-sizing: border-box;
+  flex: 1;           /* fill remaining height after header + toolbar */
+  min-height: 0;     /* allow flex child to shrink below content size */
 }
 
 .left-column {
   flex: 1;
-  min-width: 0; /* Allow shrinking */
-  max-width: calc(100% - 240px); /* Reserve space for right column + gap */
+  min-width: 0;        /* Allow shrinking horizontally */
+  max-width: calc(100% - 240px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;       /* allow column to shrink */
 }
 
 .right-column {
-  flex: 0 0 220px; /* Reduced from 260px to better match avatar max-width */
+  flex: 0 0 220px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  min-height: 0;       /* allow shrinking */
+  overflow-y: hidden;
 }
 
 /* Update avatar sizing for responsiveness */
 .avatar {
-  height: 0;
-  padding-bottom: calc(100% - 10px); /* Square aspect ratio */
+  flex: 1;            /* fill space above .below-avatar bar */
+  min-height: 0;
+  width: 100%;
+  max-height: 180px;  /* cap so avatars don't grow excessively on tall windows */
   background: linear-gradient(145deg, #5a8faa 0%, #3d6a84 55%, #2a4f68 100%);
-  max-width: 200px; /* Prevent excessive growth */
-  max-height: 200px;
   border-radius: 8px;
   box-shadow:
     inset 0 1px 2px rgba(255,255,255,0.55),
@@ -529,39 +536,37 @@ button {
 /* Responsive breakpoints */
 @media (max-width: 1312px) {
   .chat-and-avatars {
-    gap: 15px;
-    padding: 0 15px;
+    gap: 8px;
   }
   
   .left-column {
-    max-width: calc(100% - 230px);
+    max-width: calc(100% - 225px);
   }
   
   .right-column {
-    flex: 0 0 210px;
+    flex: 0 0 212px;
   }
 }
 
 @media (max-width: 1024px) {
   .chat-and-avatars {
-    gap: 10px;
-    padding: 0 10px;
+    gap: 8px;
   }
   
   .left-column {
-    max-width: calc(100% - 180px);
+    max-width: calc(100% - 175px);
   }
   
   .right-column {
-    flex: 0 0 160px;
+    flex: 0 0 162px;
   }
 }
 
 @media (max-width: 768px) {
   .chat-and-avatars {
     flex-direction: column;
-    gap: 10px;
-    padding: 0 10px;
+    gap: 8px;
+    padding: 0;  /* container padding handles edges */
   }
   
   .left-column {
@@ -582,19 +587,24 @@ button {
   }
   
   .avatar {
-    width: 120px;
-    height: 120px;
-    padding-bottom: 0; /* Reset padding-bottom for fixed size */
+    flex: none;
+    width: 100%;
+    height: 100px; /* fixed height for side-by-side mobile layout */
   }
 }
 
 .user-block {
   border: 2px solid #bbb;
+  border-radius: 6px;
   padding: 5px;
   width: 100%; /* Take full width of right-column */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  flex: 1;           /* share right-column height equally between the two panels */
+  min-height: 0;
+  max-height: 210px; /* cap like MSN's fixed avatar panels */
+  overflow: hidden;  /* clip avatar corners cleanly */
 }
 
 @media (max-width: 480px) {
@@ -604,14 +614,16 @@ button {
   }
   
   .avatar {
-    width: 120px;
-    height: 120px;
+    flex: none;
+    width: 100%;
+    height: 80px;
   }
 }
 
 .below-avatar {
   align-items: center;
   height: 30px; /* Fixed height for consistent button placement */
+  flex-shrink: 0;  /* never let this bar get squished */
   display: flex;
   justify-content: space-between;
 }
@@ -633,7 +645,9 @@ button {
 }
 
 .chat_top-bar {
-  margin: 0 20px; /* Match the padding of chat-and-avatars */
+  margin: 0;       /* outer padding from .chat_container handles edges */
+  border-radius: 4px;
+  overflow: hidden;
 }
 
 .chat_receiver-bar {
@@ -642,32 +656,29 @@ button {
   align-items: center;
   justify-content: space-between;
   padding: 8px 0px;
-  margin: 0 20px; /* Match the padding of chat-and-avatars */
+  margin: 0;       /* outer padding from .chat_container handles edges */
   background: #f0f8ff;
-  border-bottom: 1px solid #c8ded9;
+  border: 1px solid #c8ded9;
+  border-radius: 4px;
   min-height: 60px;
-  margin-bottom: 0;
 }
 
-/* Responsive alignment for header bars */
-@media (max-width: 1312px) {
-  .chat_top-bar,
-  .chat_receiver-bar {
-    margin: 0 15px;
-  }
-}
-
-@media (max-width: 1024px) {
-  .chat_top-bar,
-  .chat_receiver-bar {
-    margin: 0 10px;
-  }
-}
-
+/* Responsive alignment: container padding scales, no per-element margin needed */
 @media (max-width: 768px) {
-  .chat_top-bar,
-  .chat_receiver-bar {
-    margin: 0 10px;
+  .chat_container {
+    padding: 6px;
+  }
+}
+
+/* Hide avatar column when the window is too narrow OR too short to show it usefully.
+   The left column (message area) then fills the full width.
+   Height threshold: ~610px viewport = the point where avatars crowd out message history. */
+@media (max-width: 500px), (max-height: 610px) {
+  .right-column {
+    display: none;
+  }
+  .left-column {
+    max-width: 100%;
   }
 }
 
@@ -739,8 +750,10 @@ button {
   padding: 8px;
   height: auto;
   border: 1px solid #bbb;
+  border-radius: 4px;
   background: linear-gradient(#fafcff, #dce7ea);
   justify-content: center;
+  flex-shrink: 0;
 }
 
 /* Chat Icon Buttons */
@@ -803,6 +816,8 @@ button {
   padding: 8px;
   background: #f9f9f9;
   border: 1px solid #ccc;
+  border-radius: 4px;
+  flex-shrink: 0;
 }
 
 .chat_message-form textarea {
@@ -840,32 +855,45 @@ button {
   transform: translateY(1px);
 }
 
-.chat-window {
-  height: 100%;
+/* .chat_container: outermost chat page wrapper — fills the viewport via .container (height:100vh) */
+.chat_container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px;          /* uniform gap from window edges — nothing touches the frame */
+  gap: 4px;              /* vertical spacing between header / toolbar / content */
+  box-sizing: border-box;
+}
+
+/* .chat_window: wraps the message list — grows to fill all free vertical space */
+.chat_window {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .chat_message-list {
   background-color: #ffffff;
-  min-height: 400px;
-  height: calc(80vh - 200px); /* Adjust the subtracted value as needed */
-  max-height: 600px; /* Set a maximum height if desired */
-  flex: 1;
+  flex: 1;           /* grow to fill .chat_window */
+  min-height: 120px; /* never collapse below a usable reading height */
   display: flex;
   flex-direction: column;
   align-content: start;
   align-items: start;
   justify-content: start;
   justify-items: start;
-  padding-top: 1rem;
-  overflow-y: auto;
+  padding: 8px 8px 8px 0;  /* breathing room inside the list */
+  border-radius: 4px;
+  overflow-y: auto;  /* scroll instead of overflow */
 }
 
 /* Responsive design for message area */
 @media (max-width: 768px) {
   .chat_message-list {
-    min-height: 300px;
-    height: calc(70vh - 150px);
-    max-height: 400px;
+    /* flex: 1 + min-height: 0 from base rule handle sizing — no overrides needed */
   }
   
   .chat_message-form textarea {
@@ -886,9 +914,7 @@ button {
 
 @media (max-width: 480px) {
   .chat_message-list {
-    min-height: 250px;
-    height: calc(65vh - 120px);
-    max-height: 300px;
+    /* flex layout handles sizing — no overrides needed */
   }
   
   .chat_message-form {
@@ -1148,10 +1174,21 @@ button {
 }
 
 #login_title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   font-size: 32px;
   font-weight: bold;
   margin-bottom: 8px;
   letter-spacing: 4px;
+}
+
+#login_welcome {
+  font-size: 13px;
+  font-weight: normal;
+  letter-spacing: 1px;
+  opacity: 0.75;
+  margin-bottom: 2px;
 }
 
 #login_avatar {
