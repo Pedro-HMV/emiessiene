@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::{mpsc, Mutex};
 use tokio_xmpp::parsers::iq::Iq as XmppIq;
 use tokio_xmpp::parsers::message::{Lang, Message as XmppMsg, MessageType};
@@ -495,7 +495,7 @@ impl XmppManager {
                 error: None,
             };
             app_handle
-                .emit_all("xmpp_disconnected", &status)
+                .emit("xmpp_disconnected", &status)
                 .map_err(|e| format!("Failed to emit disconnected event: {}", e))?;
         }
 
@@ -564,7 +564,7 @@ async fn xmpp_event_loop(
                             jid: Some(jid_string),
                             error: None,
                         };
-                        if let Err(e) = app_handle.emit_all("xmpp_connected", &conn_status) {
+                        if let Err(e) = app_handle.emit("xmpp_connected", &conn_status) {
                             error!("Failed to emit xmpp_connected: {}", e);
                         }
                         // Phase D: broadcast initial available presence
@@ -598,7 +598,7 @@ async fn xmpp_event_loop(
                                 timestamp: chrono::Utc::now().to_rfc3339(),
                                 message_type: "chat".to_string(),
                             };
-                            if let Err(e) = app_handle.emit_all("xmpp_message_received", &xmpp_msg) {
+                            if let Err(e) = app_handle.emit("xmpp_message_received", &xmpp_msg) {
                                 error!("Failed to emit xmpp_message_received: {}", e);
                             }
                         }
@@ -616,7 +616,7 @@ async fn xmpp_event_loop(
                                     }
                                 }
                                 let payload = serde_json::json!({ "from_jid": from_jid });
-                                if let Err(e) = app_handle.emit_all("xmpp_subscription_request", &payload) {
+                                if let Err(e) = app_handle.emit("xmpp_subscription_request", &payload) {
                                     error!("Failed to emit xmpp_subscription_request: {}", e);
                                 }
                             }
@@ -647,7 +647,7 @@ async fn xmpp_event_loop(
                                     };
                                     // Write to cache so MainPage can replay on mount
                                     presence_cache.lock().await.insert(bare_jid, xmpp_pres.clone());
-                                    if let Err(e) = app_handle.emit_all("xmpp_presence_update", &xmpp_pres) {
+                                    if let Err(e) = app_handle.emit("xmpp_presence_update", &xmpp_pres) {
                                         error!("Failed to emit xmpp_presence_update: {}", e);
                                     }
                                 }
@@ -680,7 +680,7 @@ async fn xmpp_event_loop(
                                         "flavour_text": flavour_text,
                                     });
                                     info!("vCard received (jid='{}'): nickname='{}', desc='{}'", vcard_jid, nickname, flavour_text);
-                                    if let Err(e) = app_handle.emit_all("xmpp_vcard_received", &payload) {
+                                    if let Err(e) = app_handle.emit("xmpp_vcard_received", &payload) {
                                         error!("Failed to emit xmpp_vcard_received: {}", e);
                                     }
                                 } else if let Ok(roster) = Roster::try_from(elem) {
@@ -692,7 +692,7 @@ async fn xmpp_event_loop(
                                         })
                                     }).collect();
                                     info!("Roster received with {} contacts", contacts.len());
-                                    if let Err(e) = app_handle.emit_all("xmpp_roster_received", &contacts) {
+                                    if let Err(e) = app_handle.emit("xmpp_roster_received", &contacts) {
                                         error!("Failed to emit xmpp_roster_received: {}", e);
                                     }
                                 }
@@ -716,7 +716,7 @@ async fn xmpp_event_loop(
                                             "name": item.name.as_deref().unwrap_or(""),
                                             "subscription": subscription_str(&item.subscription),
                                         });
-                                        if let Err(e) = app_handle.emit_all("xmpp_roster_push", &push) {
+                                        if let Err(e) = app_handle.emit("xmpp_roster_push", &push) {
                                             error!("Failed to emit xmpp_roster_push: {}", e);
                                         }
                                     }
@@ -742,7 +742,7 @@ async fn xmpp_event_loop(
                             jid: None,
                             error: Some(err.to_string()),
                         };
-                        if let Err(e) = app_handle.emit_all("xmpp_disconnected", &conn_status) {
+                        if let Err(e) = app_handle.emit("xmpp_disconnected", &conn_status) {
                             error!("Failed to emit xmpp_disconnected: {}", e);
                         }
                         break;

@@ -2,7 +2,7 @@
 
 This guide provides detailed instructions for developing, packaging, and deploying the NTO project.
 
-The project is a Tauri v1 + Leptos 0.8 WASM desktop app. The backend handles XMPP connectivity (via `tokio-xmpp`), persists login preferences to the OS app-data folder, and exposes Tauri commands to the frontend. The frontend is a reactive WASM app rendered inside a WebView2 window.
+The project is a Tauri v2 + Leptos 0.8 WASM desktop app. The backend handles XMPP connectivity (via `tokio-xmpp`), persists login preferences to the OS app-data folder, and exposes Tauri commands to the frontend. The frontend is a reactive WASM app rendered inside a WebView2 window.
 
 ## 📋 Prerequisites
 
@@ -247,13 +247,22 @@ cargo tauri info
    // In Leptos component
    use crate::app::invoke;
    use serde_wasm_bindgen::to_value;
-   
+
    let call_command = move || {
        spawn_local(async move {
            let result = invoke("new_command", to_value(&"parameter").unwrap()).await;
            // Handle result
        });
    };
+   ```
+
+   For commands that can fail, use `invoke_catching` from `loginpage_component` or `mainpage_component`:
+   ```rust
+   #[wasm_bindgen]
+   extern "C" {
+       #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = "invoke", catch)]
+       async fn invoke_catching(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+   }
    ```
 
 ### Adding New Routes
@@ -455,7 +464,16 @@ fn test_component() {
      ```
    - For events that may arrive repeatedly before mount, buffer them in `XmppManager` (see `pending_subscriptions`) and expose a drain command
 
-5. **Duplicate pending friend requests (contact shows in Pending after already being accepted)**
+5. **Frontend shows stale UI after a clean build (old code still rendering)**
+   - Caused by the CSP blocking trunk's HMR WebSocket (`ws://localhost:1420/_trunk/ws`)
+   - The app window opens before the WASM finishes compiling; trunk can't send the reload signal
+   - **Fix**: ensure `tauri.conf.json` `connect-src` includes both WebSocket origins:
+     ```json
+     "csp": "... connect-src ipc: http://ipc.localhost ws://localhost:1420 ws://127.0.0.1:1420"
+     ```
+   - If the WebSocket was blocked in a previous session, press F5 inside the window to force-reload
+
+6. **Duplicate pending friend requests (contact shows in Pending after already being accepted)**
    - Caused by ejabberd echoing the mutual `subscribe` presence back as a new incoming `subscribe`
    - Guard the `xmpp_subscription_request` listener: skip adding a JID to pending if it is already present in either the online or offline friends list
    - The `xmpp_roster_push` listener should also call `set_pending_requests.update(|r| r.retain(...))` when a contact moves to `"both"/"from"/"to"` subscription state

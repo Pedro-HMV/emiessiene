@@ -1,0 +1,6 @@
+[build]
+target-dir = "target-wasm"
+
+[target.wasm32-unknown-unknown]
+# No special flags needed; target-dir above routes WASM artifacts away from
+# the native target dir so the two builds don't clobber each other.

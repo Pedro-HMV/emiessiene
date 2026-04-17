@@ -320,7 +320,7 @@ cargo test
 - `log`, `env_logger`, `console_error_panic_hook`
 
 ### Backend Dependencies (`src-tauri/Cargo.toml`, package `nto`)
-- `tauri = "1"` with `shell-open` feature
+- `tauri = "2"` (no extra features needed for current command set)
 - `tokio = "1.0"` with `full` feature
 - `tokio-xmpp = "5"` — `default-features = false`, features `["direct-tls", "native-tls"]`
 - `jid = "0.12"`, `minidom = "0.18"`, `native-tls = "0.2"`, `tokio-native-tls = "0.3"`
@@ -362,12 +362,25 @@ cargo test
 - Use signals appropriately for reactivity
 - Handle async operations with proper error handling
 - Avoid prop drilling by using context when appropriate
+- **Navigation links**: always use `<A>` from `leptos_router::components::A`, never raw `<a href="...">`. Raw anchors cause a full page reload instead of client-side routing.
+- **`<A>` does not accept a `style` prop** — apply styles via CSS classes instead (e.g. `.my-link a { color: ... }`).
 
 ### Tauri-Specific Issues
 - Register all commands in `invoke_handler`
 - Use proper serialization/deserialization
 - Handle file system operations securely
 - Test both development and production builds
+- **`invoke` namespace changed in Tauri v2**: always use `"core"`, NOT `"tauri"`. The correct wasm_bindgen declaration is:
+  ```rust
+  #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = "invoke", catch)]
+  async fn invoke_catching(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+  ```
+  Using `"tauri"` returns `undefined` (not a Promise) and causes a `Cannot read properties of undefined (reading 'then')` panic at the first invocation.
+- **Trunk HMR WebSocket is blocked by default CSP**: on a clean build the backend starts before the WASM finishes compiling. If `connect-src` in `tauri.conf.json` doesn't include `ws://localhost:1420`, trunk can never send the reload signal and the window stays on a stale page. Fix:
+  ```json
+  "csp": "... connect-src ipc: http://ipc.localhost ws://localhost:1420 ws://127.0.0.1:1420"
+  ```
+- **`acceptFirstMouse: true`** must be set in the window config in `tauri.conf.json`; without it the first click on any element activates the window instead of firing the click handler.
 
 ## ⚠️ Event Timing & Race Conditions
 

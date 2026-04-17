@@ -1,6 +1,7 @@
 use super::models::{Availability, SavedProfile, User};
 use leptos::prelude::*;
 use leptos::web_sys;
+use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{from_value, to_value};
@@ -9,7 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"], js_name = "invoke", catch)]
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = "invoke", catch)]
     async fn invoke_catching(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
 }
 
@@ -122,14 +123,16 @@ pub fn LoginPage() -> impl IntoView {
                 return;
             }
 
+            if !username.get().trim().contains('@') {
+                set_error_message
+                    .set("Please enter your full JID (e.g. yourname@domain.com)".to_string());
+                return;
+            }
+
             // Set loading state
             set_is_loading.set(true);
 
-            let jid = if username.get().trim().contains('@') {
-                username.get().trim().to_string()
-            } else {
-                format!("{}@nto.local", username.get().trim())
-            };
+            let jid = username.get().trim().to_string();
             let password_value = password.get().clone();
             let availability_value = availability.get().clone();
             let remember_me_captured = remember_me.get();
@@ -449,9 +452,9 @@ pub fn LoginPage() -> impl IntoView {
 
                 <div class="register-link" style="margin-top: 20px; text-align: center;">
                     "Don't have an account? "
-                    <a href="/register" style="color: #0066cc; text-decoration: none;">
+                    <A href="/register">
                         "Create Account"
-                    </a>
+                    </A>
                 </div>
             </form>
         </div>

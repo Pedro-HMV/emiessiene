@@ -4,7 +4,7 @@
 use std::{env, fmt::Display, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{command, State};
+use tauri::{command, Manager, State};
 
 use log;
 
@@ -91,10 +91,9 @@ struct SavedProfile {
 }
 
 fn read_profile_data(app_handle: &tauri::AppHandle) -> serde_json::Value {
-    let config = app_handle.config();
-    let data_dir = match tauri::api::path::app_data_dir(&config) {
-        Some(d) => d,
-        None => return serde_json::json!({}),
+    let data_dir = match app_handle.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => return serde_json::json!({}),
     };
     let file_path = data_dir.join("nto_remembered.json");
     if !file_path.exists() {
@@ -110,9 +109,8 @@ fn write_profile_data(
     app_handle: &tauri::AppHandle,
     json: &serde_json::Value,
 ) -> Result<(), String> {
-    let config = app_handle.config();
-    let data_dir = tauri::api::path::app_data_dir(&config)
-        .ok_or_else(|| "Failed to get app data directory".to_string())?;
+    let data_dir = app_handle.path().app_data_dir()
+        .map_err(|_| "Failed to get app data directory".to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let file_path = data_dir.join("nto_remembered.json");
     std::fs::write(&file_path, serde_json::to_string(json).unwrap()).map_err(|e| e.to_string())
@@ -174,6 +172,7 @@ fn main() {
     let xmpp_state = std::sync::Arc::new(tokio::sync::Mutex::new(xmpp_manager));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .manage(Mutex::new(app))
         .manage(xmpp_state)
         .setup(|_app| Ok(()))

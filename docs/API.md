@@ -7,8 +7,8 @@ This document describes the full interface between the Leptos frontend and the T
 Communication uses Tauri's command system (`invoke`) for frontend→backend calls and named events (`emit_all` / `listen`) for backend→frontend push. All data crosses the WASM boundary via `serde_wasm_bindgen`.
 
 ```rust
-// Frontend invocation pattern
-use crate::app::invoke;
+// Frontend invocation pattern (non-failing commands)
+use crate::app::invoke;  // declared in app.rs with js_namespace ["window","__TAURI__","core"]
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen_futures::spawn_local;
 
@@ -17,6 +17,13 @@ spawn_local(async move {
     let result = invoke("command_name", args).await;
     let data: MyType = from_value(result).unwrap();
 });
+
+// For commands that can return an error, use invoke_catching:
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = "invoke", catch)]
+    async fn invoke_catching(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+}
 ```
 
 ## Data Models

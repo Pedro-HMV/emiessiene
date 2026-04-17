@@ -3,6 +3,7 @@
 target-instance-2/
 webview2-instance-2/**/*
 /Cargo.lock
+target-wasm/**/*
 
 .history/
 .vscode/

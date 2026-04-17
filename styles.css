@@ -1159,6 +1159,15 @@ button {
 .login-link a:hover {
   text-decoration: underline;
 }
+
+.register-link a {
+  color: #0066cc;
+  text-decoration: none;
+}
+
+.register-link a:hover {
+  text-decoration: underline;
+}
 /* ========================
    Login Page
    ======================== */
