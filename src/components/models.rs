@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
 
+/// The XMPP server address. Usernames entered in the UI are combined with
+/// this to form a full JID (e.g. "alice" → "alice@203.0.113.42").
+pub const XMPP_SERVER: &str = "203.0.113.42";
+
 #[derive(Serialize, Deserialize)]
 pub struct UpdateUsernameArgs<'a> {
     pub name: &'a str,

@@ -1,4 +1,4 @@
-use super::models::Availability;
+use super::models::XMPP_SERVER;
 use crate::app::invoke;
 use leptos::prelude::*;
 use leptos_router::hooks::use_navigate;
@@ -14,11 +14,8 @@ struct XmppRegisterArgs {
 
 #[component]
 pub fn RegisterPage() -> impl IntoView {
-    let (name, set_name) = signal(String::new());
-    let (email, set_email) = signal(String::new());
+    let (username, set_username) = signal(String::new());
     let (password, set_password) = signal(String::new());
-    let (status, set_status) = signal("Hello from NTO!".to_string());
-    let (availability, set_availability) = signal(Availability::Online);
     let (is_loading, set_is_loading) = signal(false);
     let (error_message, set_error_message) = signal(String::new());
 
@@ -28,30 +25,21 @@ pub fn RegisterPage() -> impl IntoView {
         set_is_loading.set(true);
         set_error_message.set(String::new());
 
-        let name_value = name.get();
-        let email_value = email.get();
+        let username_value = username.get();
         let password_value = password.get();
         let navigate = navigate.clone();
 
         // Basic validation
-        if name_value.trim().is_empty()
-            || email_value.trim().is_empty()
-            || password_value.trim().is_empty()
-        {
+        if username_value.trim().is_empty() || password_value.trim().is_empty() {
             set_error_message.set("All fields are required".to_string());
             set_is_loading.set(false);
             return;
         }
 
-        if !email_value.contains('@') {
-            set_error_message.set("Please enter a valid email address".to_string());
-            set_is_loading.set(false);
-            return;
-        }
-
         spawn_local(async move {
+            let jid = format!("{}@{}", username_value.trim(), XMPP_SERVER);
             let register_args = XmppRegisterArgs {
-                jid: email_value.trim().to_string(),
+                jid: jid.clone(),
                 password: password_value.clone(),
             };
 
@@ -90,25 +78,13 @@ pub fn RegisterPage() -> impl IntoView {
 
             <form id="register_form" class="flex-col">
                 <div class="form-group">
-                    <label for="name">"Full Name"</label>
+                    <label for="username">"Username"</label>
                     <input
                         type="text"
-                        id="name"
-                        placeholder="Enter your full name"
-                        value=move || name.get()
-                        on:input=move |ev| set_name.set(event_target_value(&ev))
-                        disabled=move || is_loading.get()
-                    />
-                </div>
-
-                <div class="form-group">
-                    <label for="email">"Email Address"</label>
-                    <input
-                        type="email"
-                        id="email"
-                        placeholder="your.email@domain.com"
-                        value=move || email.get()
-                        on:input=move |ev| set_email.set(event_target_value(&ev))
+                        id="username"
+                        placeholder="Choose a username"
+                        value=move || username.get()
+                        on:input=move |ev| set_username.set(event_target_value(&ev))
                         disabled=move || is_loading.get()
                     />
                 </div>
@@ -123,49 +99,6 @@ pub fn RegisterPage() -> impl IntoView {
                         on:input=move |ev| set_password.set(event_target_value(&ev))
                         disabled=move || is_loading.get()
                     />
-                </div>
-
-                <div class="form-group">
-                    <label for="status">"Status Message"</label>
-                    <input
-                        type="text"
-                        id="status"
-                        placeholder="What's on your mind?"
-                        value=move || status.get()
-                        on:input=move |ev| set_status.set(event_target_value(&ev))
-                        disabled=move || is_loading.get()
-                    />
-                </div>
-
-                <div class="form-group">
-                    <label for="availability">"Initial Status"</label>
-                    <select
-                        id="availability"
-                        on:change=move |ev| {
-                            let value = event_target_value(&ev);
-                            let avail = match value.as_str() {
-                                "Away" => Availability::Away,
-                                "Busy" => Availability::Busy,
-                                "Offline" => Availability::Offline,
-                                _ => Availability::Online,
-                            };
-                            set_availability.set(avail);
-                        }
-                        disabled=move || is_loading.get()
-                    >
-                        <option value="Online" selected=move || matches!(availability.get(), Availability::Online)>
-                            "🟢 Online"
-                        </option>
-                        <option value="Away" selected=move || matches!(availability.get(), Availability::Away)>
-                            "🟡 Away"
-                        </option>
-                        <option value="Busy" selected=move || matches!(availability.get(), Availability::Busy)>
-                            "🔴 Busy"
-                        </option>
-                        <option value="Offline" selected=move || matches!(availability.get(), Availability::Offline)>
-                            "⚫ Offline"
-                        </option>
-                    </select>
                 </div>
 
                 <Show when=move || !error_message.get().is_empty()>

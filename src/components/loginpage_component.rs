@@ -1,4 +1,4 @@
-use super::models::{Availability, SavedProfile, User};
+use super::models::{Availability, SavedProfile, User, XMPP_SERVER};
 use leptos::prelude::*;
 use leptos::web_sys;
 use leptos_router::hooks::use_navigate;
@@ -69,7 +69,13 @@ pub fn LoginPage() -> impl IntoView {
         if let Ok(result) = invoke_catching("get_saved_profile", JsValue::null()).await {
             if let Ok(profile) = from_value::<SavedProfile>(result) {
                 if !profile.jid.is_empty() && username.get_untracked().is_empty() {
-                    set_username.set(profile.jid);
+                    // Show only the local-part (e.g. "alice" instead of "alice@203.0.113.42")
+                    let local = profile.jid
+                        .split('@')
+                        .next()
+                        .unwrap_or(&profile.jid)
+                        .to_string();
+                    set_username.set(local);
                 }
                 set_remember_me.set(profile.remember_me);
                 set_auto_sign_in.set(profile.auto_sign_in);
@@ -113,7 +119,7 @@ pub fn LoginPage() -> impl IntoView {
 
             // Validate input
             if username.get().trim().is_empty() {
-                set_error_message.set("Email is required".to_string());
+                set_error_message.set("Username is required".to_string());
                 return;
             }
 
@@ -128,7 +134,7 @@ pub fn LoginPage() -> impl IntoView {
             let jid = if username.get().trim().contains('@') {
                 username.get().trim().to_string()
             } else {
-                format!("{}@nto.local", username.get().trim())
+                format!("{}@{}", username.get().trim(), XMPP_SERVER)
             };
             let password_value = password.get().clone();
             let availability_value = availability.get().clone();
@@ -367,7 +373,7 @@ pub fn LoginPage() -> impl IntoView {
                 <input
                     type="text"
                     id="login_username"
-                    placeholder="Email (e.g., pedro@hotmail.com)"
+                    placeholder="Username"
                     prop:value=username
                     on:input=move |ev| set_username.set(event_target_value(&ev))
                     on:keydown=on_enter_username
