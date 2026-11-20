@@ -9,7 +9,7 @@ use wasm_bindgen_futures::spawn_local;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"], js_name = "invoke", catch)]
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"], js_name = "invoke", catch)]
     async fn invoke_catching(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
 }
 
@@ -69,8 +69,9 @@ pub fn LoginPage() -> impl IntoView {
         if let Ok(result) = invoke_catching("get_saved_profile", JsValue::null()).await {
             if let Ok(profile) = from_value::<SavedProfile>(result) {
                 if !profile.jid.is_empty() && username.get_untracked().is_empty() {
-                    // Show only the local-part (e.g. "alice" instead of "alice@203.0.113.42")
-                    let local = profile.jid
+                    // Show only the local-part of the remembered JID.
+                    let local = profile
+                        .jid
                         .split('@')
                         .next()
                         .unwrap_or(&profile.jid)

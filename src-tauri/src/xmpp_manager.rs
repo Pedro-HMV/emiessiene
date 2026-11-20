@@ -1,14 +1,14 @@
 use futures::StreamExt;
 use log::{error, info, warn};
-use minidom::Element as MinidomElement;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tauri::Manager;
+use tauri::Emitter;
 use tokio::sync::{mpsc, Mutex};
+use tokio_xmpp::minidom::Element as MinidomElement;
 use tokio_xmpp::parsers::iq::Iq as XmppIq;
 use tokio_xmpp::parsers::message::{Lang, Message as XmppMsg, MessageType};
 use tokio_xmpp::parsers::presence::{Presence, Show, Type as PresenceType};
@@ -74,10 +74,15 @@ enum OutgoingCmd {
     Disconnect,
 }
 
-// Debug-only connector that skips TLS certificate validation.
-// Allows the app to connect to a local dev server with a self-signed cert.
-#[cfg(debug_assertions)]
-mod insecure_connector {
+struct XmppEventLoopState {
+    status: Arc<Mutex<ConnectionStatus>>,
+    own_jid: String,
+    pending_subscriptions: Arc<Mutex<Vec<String>>>,
+    presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
+    current_show: Arc<Mutex<Option<String>>>,
+}
+
+mod configured_connector {
     use sasl::common::ChannelBinding;
     use std::borrow::Cow;
     use std::sync::{
@@ -93,15 +98,16 @@ mod insecure_connector {
     };
 
     #[derive(Clone, Debug)]
-    pub struct InsecureTlsConnector {
+    pub struct ConfiguredTlsConnector {
         pub host: String,
         pub port: u16,
+        pub allow_invalid_certs: bool,
         /// Set to true after an auth failure to silently halt tokio-xmpp's internal
         /// exponential-backoff retry loop (which runs in a detached task we can't cancel).
         pub stop: Arc<AtomicBool>,
     }
 
-    impl ServerConnector for InsecureTlsConnector {
+    impl ServerConnector for ConfiguredTlsConnector {
         type Stream = BufStream<tokio_native_tls::TlsStream<TcpStream>>;
 
         async fn connect(
@@ -120,26 +126,17 @@ mod insecure_connector {
                 .await
                 .map_err(XmppError::Io)?;
 
-            // TLS with cert validation disabled — debug builds only!
+            // Certificate validation is disabled only when explicitly enabled by
+            // NTO_XMPP_ALLOW_INVALID_CERTS in a debug build.
             let native_connector = native_tls::TlsConnector::builder()
-                .danger_accept_invalid_certs(true)
+                .danger_accept_invalid_certs(self.allow_invalid_certs)
                 .build()
-                .map_err(|e| {
-                    XmppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    ))
-                })?;
+                .map_err(|e| XmppError::Io(std::io::Error::other(e.to_string())))?;
             let tokio_connector = tokio_native_tls::TlsConnector::from(native_connector);
             let tls_stream = tokio_connector
                 .connect(jid.domain().as_str(), tcp)
                 .await
-                .map_err(|e| {
-                    XmppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    ))
-                })?;
+                .map_err(|e| XmppError::Io(std::io::Error::other(e.to_string())))?;
 
             // XMPP stream initiation — Cow::Owned avoids borrow lifetime issues
             let domain = jid.domain().to_string();
@@ -160,6 +157,24 @@ mod insecure_connector {
             Ok((pending, ChannelBinding::None))
         }
     }
+}
+
+pub(crate) fn xmpp_port() -> u16 {
+    std::env::var("NTO_XMPP_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(5223)
+}
+
+pub(crate) fn xmpp_allow_invalid_certs() -> bool {
+    cfg!(debug_assertions)
+        && matches!(
+            std::env::var("NTO_XMPP_ALLOW_INVALID_CERTS")
+                .ok()
+                .as_deref(),
+            Some("1" | "true" | "TRUE" | "yes")
+        )
 }
 
 pub struct XmppManager {
@@ -215,26 +230,27 @@ impl XmppManager {
             .parse()
             .map_err(|e| format!("Invalid JID '{}': {}", jid_str, e))?;
 
-        // Create the XMPP client — in debug, skip TLS cert validation for local self-signed certs
-        #[cfg(debug_assertions)]
+        // Use the JID domain as the XMPP domain and allow a separate network host/port
+        // for local testing through NTO_XMPP_HOST and NTO_XMPP_PORT.
         let stop_flag = Arc::new(AtomicBool::new(false));
-        #[cfg(debug_assertions)]
+        let domain = jid.domain().to_string();
+        let host = std::env::var("NTO_XMPP_HOST").unwrap_or(domain);
+        let port = xmpp_port();
+        let allow_invalid_certs = xmpp_allow_invalid_certs();
         let client = {
-            use insecure_connector::InsecureTlsConnector;
-            let domain = jid.domain().to_string();
+            use configured_connector::ConfiguredTlsConnector;
             tokio_xmpp::Client::new_with_connector(
                 jid,
                 password,
-                InsecureTlsConnector {
-                    host: domain,
-                    port: 5223,
+                ConfiguredTlsConnector {
+                    host,
+                    port,
+                    allow_invalid_certs,
                     stop: stop_flag.clone(),
                 },
                 tokio_xmpp::xmlstream::Timeouts::default(),
             )
         };
-        #[cfg(not(debug_assertions))]
-        let client = tokio_xmpp::Client::new_direct_tls(jid, password);
 
         // Create the command channel
         let (tx, rx) = mpsc::channel::<OutgoingCmd>(32);
@@ -255,12 +271,14 @@ impl XmppManager {
             client,
             rx,
             app_handle,
-            status_arc,
-            own_jid,
+            XmppEventLoopState {
+                status: status_arc,
+                own_jid,
+                pending_subscriptions: pending_subs_arc,
+                presence_cache: presence_cache_arc,
+                current_show: current_show_arc,
+            },
             Some(auth_tx),
-            pending_subs_arc,
-            presence_cache_arc,
-            current_show_arc,
         ));
 
         self.sender = Some(tx);
@@ -285,7 +303,6 @@ impl XmppManager {
         // Clean up on any failure path.
         // Set the stop flag first so the connector's pending() trap catches the next retry
         // attempt from tokio-xmpp's detached reconnector task (which we cannot cancel directly).
-        #[cfg(debug_assertions)]
         stop_flag.store(true, Ordering::Relaxed);
         if let Some(sender) = self.sender.take() {
             sender.send(OutgoingCmd::Disconnect).await.ok();
@@ -495,7 +512,7 @@ impl XmppManager {
                 error: None,
             };
             app_handle
-                .emit_all("xmpp_disconnected", &status)
+                .emit("xmpp_disconnected", &status)
                 .map_err(|e| format!("Failed to emit disconnected event: {}", e))?;
         }
 
@@ -515,10 +532,6 @@ impl XmppManager {
     pub async fn get_current_jid(&self) -> Option<String> {
         self.connection_status.lock().await.jid.clone()
     }
-
-    pub async fn get_connection_status(&self) -> ConnectionStatus {
-        self.connection_status.lock().await.clone()
-    }
 }
 
 fn subscription_str(s: &Subscription) -> &'static str {
@@ -535,12 +548,8 @@ async fn xmpp_event_loop(
     mut client: tokio_xmpp::Client,
     mut rx: mpsc::Receiver<OutgoingCmd>,
     app_handle: tauri::AppHandle,
-    status: Arc<Mutex<ConnectionStatus>>,
-    own_jid: String,
+    state: XmppEventLoopState,
     mut auth_result: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
-    pending_subscriptions: Arc<Mutex<Vec<String>>>,
-    presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
-    current_show: Arc<Mutex<Option<String>>>,
 ) {
     loop {
         tokio::select! {
@@ -550,7 +559,7 @@ async fn xmpp_event_loop(
                         info!("XMPP online! Bound JID: {}", bound_jid);
                         let jid_string = bound_jid.to_string();
                         {
-                            let mut s = status.lock().await;
+                            let mut s = state.status.lock().await;
                             s.connected = true;
                             s.jid = Some(jid_string.clone());
                             s.error = None;
@@ -564,7 +573,7 @@ async fn xmpp_event_loop(
                             jid: Some(jid_string),
                             error: None,
                         };
-                        if let Err(e) = app_handle.emit_all("xmpp_connected", &conn_status) {
+                        if let Err(e) = app_handle.emit("xmpp_connected", &conn_status) {
                             error!("Failed to emit xmpp_connected: {}", e);
                         }
                         // Phase D: broadcast initial available presence
@@ -593,12 +602,18 @@ async fn xmpp_event_loop(
                             let xmpp_msg = XmppMessage {
                                 id: msg_id,
                                 from: from_jid,
-                                to: own_jid.clone(),
+                                to: state.own_jid.clone(),
                                 body: body_text.clone(),
-                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                timestamp: {
+                                    let seconds = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs();
+                                    format!("{seconds}")
+                                },
                                 message_type: "chat".to_string(),
                             };
-                            if let Err(e) = app_handle.emit_all("xmpp_message_received", &xmpp_msg) {
+                            if let Err(e) = app_handle.emit("xmpp_message_received", &xmpp_msg) {
                                 error!("Failed to emit xmpp_message_received: {}", e);
                             }
                         }
@@ -610,13 +625,13 @@ async fn xmpp_event_loop(
                             if !from_jid.is_empty() {
                                 // Buffer for later retrieval (handles race with frontend mount)
                                 {
-                                    let mut subs = pending_subscriptions.lock().await;
+                                    let mut subs = state.pending_subscriptions.lock().await;
                                     if !subs.contains(&from_jid) {
                                         subs.push(from_jid.clone());
                                     }
                                 }
                                 let payload = serde_json::json!({ "from_jid": from_jid });
-                                if let Err(e) = app_handle.emit_all("xmpp_subscription_request", &payload) {
+                                if let Err(e) = app_handle.emit("xmpp_subscription_request", &payload) {
                                     error!("Failed to emit xmpp_subscription_request: {}", e);
                                 }
                             }
@@ -638,7 +653,7 @@ async fn xmpp_event_loop(
                                 // Strip resource to get bare JID for cache key
                                 let bare_jid = jid_full.split('/').next().unwrap_or(&jid_full).to_string();
                                 // Skip own presence echoes from the server
-                                let own_bare = own_jid.split('/').next().unwrap_or(&own_jid).to_string();
+                                let own_bare = state.own_jid.split('/').next().unwrap_or(&state.own_jid).to_string();
                                 if bare_jid != own_bare {
                                     let xmpp_pres = XmppPresence {
                                         jid: bare_jid.clone(),
@@ -646,8 +661,8 @@ async fn xmpp_event_loop(
                                         status: None,
                                     };
                                     // Write to cache so MainPage can replay on mount
-                                    presence_cache.lock().await.insert(bare_jid, xmpp_pres.clone());
-                                    if let Err(e) = app_handle.emit_all("xmpp_presence_update", &xmpp_pres) {
+                                    state.presence_cache.lock().await.insert(bare_jid, xmpp_pres.clone());
+                                    if let Err(e) = app_handle.emit("xmpp_presence_update", &xmpp_pres) {
                                         error!("Failed to emit xmpp_presence_update: {}", e);
                                     }
                                 }
@@ -680,7 +695,7 @@ async fn xmpp_event_loop(
                                         "flavour_text": flavour_text,
                                     });
                                     info!("vCard received (jid='{}'): nickname='{}', desc='{}'", vcard_jid, nickname, flavour_text);
-                                    if let Err(e) = app_handle.emit_all("xmpp_vcard_received", &payload) {
+                                    if let Err(e) = app_handle.emit("xmpp_vcard_received", &payload) {
                                         error!("Failed to emit xmpp_vcard_received: {}", e);
                                     }
                                 } else if let Ok(roster) = Roster::try_from(elem) {
@@ -692,7 +707,7 @@ async fn xmpp_event_loop(
                                         })
                                     }).collect();
                                     info!("Roster received with {} contacts", contacts.len());
-                                    if let Err(e) = app_handle.emit_all("xmpp_roster_received", &contacts) {
+                                    if let Err(e) = app_handle.emit("xmpp_roster_received", &contacts) {
                                         error!("Failed to emit xmpp_roster_received: {}", e);
                                     }
                                 }
@@ -716,7 +731,7 @@ async fn xmpp_event_loop(
                                             "name": item.name.as_deref().unwrap_or(""),
                                             "subscription": subscription_str(&item.subscription),
                                         });
-                                        if let Err(e) = app_handle.emit_all("xmpp_roster_push", &push) {
+                                        if let Err(e) = app_handle.emit("xmpp_roster_push", &push) {
                                             error!("Failed to emit xmpp_roster_push: {}", e);
                                         }
                                     }
@@ -728,7 +743,7 @@ async fn xmpp_event_loop(
                     Some(Event::Disconnected(err)) => {
                         error!("XMPP disconnected: {}", err);
                         {
-                            let mut s = status.lock().await;
+                            let mut s = state.status.lock().await;
                             s.connected = false;
                             s.jid = None;
                             s.error = Some(err.to_string());
@@ -742,7 +757,7 @@ async fn xmpp_event_loop(
                             jid: None,
                             error: Some(err.to_string()),
                         };
-                        if let Err(e) = app_handle.emit_all("xmpp_disconnected", &conn_status) {
+                        if let Err(e) = app_handle.emit("xmpp_disconnected", &conn_status) {
                             error!("Failed to emit xmpp_disconnected: {}", e);
                         }
                         break;
@@ -770,7 +785,7 @@ async fn xmpp_event_loop(
                     }
                     Some(OutgoingCmd::SetPresence { show, status_text }) => {
                         // Remember the current show value for BroadcastPresence
-                        *current_show.lock().await = show.clone();
+                        *state.current_show.lock().await = show.clone();
                         let mut presence = Presence::available();
                         if let Some(show_str) = show {
                             presence = match show_str.as_str() {
@@ -855,7 +870,7 @@ async fn xmpp_event_loop(
                         }
                     }
                     Some(OutgoingCmd::BroadcastPresence) => {
-                        let show = current_show.lock().await.clone();
+                        let show = state.current_show.lock().await.clone();
                         let mut presence = Presence::available();
                         if let Some(show_str) = show {
                             presence = match show_str.as_str() {
@@ -884,6 +899,7 @@ async fn xmpp_event_loop(
                                     subscription: Subscription::None,
                                     ask: Ask::None,
                                     groups: vec![],
+                                    approved: None,
                                 };
                                 let roster_set = Roster { ver: None, items: vec![item] };
                                 let set_iq = XmppIq::Set {
@@ -916,6 +932,7 @@ async fn xmpp_event_loop(
                                     subscription: Subscription::None,
                                     ask: Ask::None,
                                     groups: vec![],
+                                    approved: None,
                                 };
                                 let roster_set = Roster { ver: None, items: vec![item] };
                                 let set_iq = XmppIq::Set {

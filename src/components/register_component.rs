@@ -15,6 +15,7 @@ struct XmppRegisterArgs {
 #[component]
 pub fn RegisterPage() -> impl IntoView {
     let (username, set_username) = signal(String::new());
+    let (domain, set_domain) = signal(XMPP_SERVER.to_string());
     let (password, set_password) = signal(String::new());
     let (is_loading, set_is_loading) = signal(false);
     let (error_message, set_error_message) = signal(String::new());
@@ -26,6 +27,7 @@ pub fn RegisterPage() -> impl IntoView {
         set_error_message.set(String::new());
 
         let username_value = username.get();
+        let domain_value = domain.get();
         let password_value = password.get();
         let navigate = navigate.clone();
 
@@ -35,9 +37,18 @@ pub fn RegisterPage() -> impl IntoView {
             set_is_loading.set(false);
             return;
         }
+        if !username_value.trim().contains('@') && domain_value.trim().is_empty() {
+            set_error_message.set("Server domain is required".to_string());
+            set_is_loading.set(false);
+            return;
+        }
 
         spawn_local(async move {
-            let jid = format!("{}@{}", username_value.trim(), XMPP_SERVER);
+            let jid = if username_value.trim().contains('@') {
+                username_value.trim().to_string()
+            } else {
+                format!("{}@{}", username_value.trim(), domain_value.trim())
+            };
             let register_args = XmppRegisterArgs {
                 jid: jid.clone(),
                 password: password_value.clone(),
@@ -82,9 +93,20 @@ pub fn RegisterPage() -> impl IntoView {
                     <input
                         type="text"
                         id="username"
-                        placeholder="Choose a username"
+                        placeholder="Username or full JID"
                         value=move || username.get()
                         on:input=move |ev| set_username.set(event_target_value(&ev))
+                        disabled=move || is_loading.get()
+                    />
+                </div>
+                <div class="form-group">
+                    <label for="domain">"Server domain"</label>
+                    <input
+                        type="text"
+                        id="domain"
+                        placeholder="localhost or server.example.com"
+                        value=move || domain.get()
+                        on:input=move |ev| set_domain.set(event_target_value(&ev))
                         disabled=move || is_loading.get()
                     />
                 </div>

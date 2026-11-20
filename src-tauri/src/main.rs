@@ -4,12 +4,10 @@
 use std::{env, fmt::Display, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{command, State};
-
-use log;
+use tauri::{command, Manager, State};
 
 mod xmpp_manager;
-use xmpp_manager::XmppManager;
+use xmpp_manager::{xmpp_allow_invalid_certs, xmpp_port, XmppManager};
 
 type App<'a> = State<'a, Mutex<AppState>>;
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
@@ -91,10 +89,9 @@ struct SavedProfile {
 }
 
 fn read_profile_data(app_handle: &tauri::AppHandle) -> serde_json::Value {
-    let config = app_handle.config();
-    let data_dir = match tauri::api::path::app_data_dir(&config) {
-        Some(d) => d,
-        None => return serde_json::json!({}),
+    let data_dir = match app_handle.path().app_data_dir() {
+        Ok(d) => d,
+        Err(_) => return serde_json::json!({}),
     };
     let file_path = data_dir.join("nto_remembered.json");
     if !file_path.exists() {
@@ -110,12 +107,15 @@ fn write_profile_data(
     app_handle: &tauri::AppHandle,
     json: &serde_json::Value,
 ) -> Result<(), String> {
-    let config = app_handle.config();
-    let data_dir = tauri::api::path::app_data_dir(&config)
-        .ok_or_else(|| "Failed to get app data directory".to_string())?;
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {e}"))?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let file_path = data_dir.join("nto_remembered.json");
-    std::fs::write(&file_path, serde_json::to_string(json).unwrap()).map_err(|e| e.to_string())
+    let contents =
+        serde_json::to_string(json).map_err(|e| format!("Failed to serialize profile: {e}"))?;
+    std::fs::write(&file_path, contents).map_err(|e| e.to_string())
 }
 
 impl AppState {
@@ -174,6 +174,7 @@ fn main() {
     let xmpp_state = std::sync::Arc::new(tokio::sync::Mutex::new(xmpp_manager));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .manage(Mutex::new(app))
         .manage(xmpp_state)
         .setup(|_app| Ok(()))
@@ -220,7 +221,6 @@ fn get_user(state: App) -> Result<User, String> {
 async fn update_username(
     state: App<'_>,
     xmpp_state: State<'_, XmppState>,
-    app_handle: tauri::AppHandle,
     name: String,
 ) -> Result<User, String> {
     log::info!("Updating username to: {}", name);
@@ -290,7 +290,6 @@ fn add_friend(
 async fn update_flavour_text(
     state: App<'_>,
     xmpp_state: State<'_, XmppState>,
-    app_handle: tauri::AppHandle,
     flavour_text: String,
 ) -> Result<User, String> {
     log::info!("Updating flavour text");
@@ -410,6 +409,24 @@ async fn xmpp_connect(
     password: String,
 ) -> Result<serde_json::Value, String> {
     log::info!("XMPP connect command called for JID: {}", jid);
+    if password.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Password is required"
+        }));
+    }
+    if jid.len() > 320 {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "JID is too long"
+        }));
+    }
+    if jid.parse::<jid::BareJid>().is_err() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Invalid JID"
+        }));
+    }
     let mut xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.set_app_handle(app_handle);
 
@@ -446,6 +463,18 @@ async fn xmpp_send_message(
     body: String,
 ) -> Result<serde_json::Value, String> {
     log::info!("XMPP send message command called for: {}", to_jid);
+    if body.trim().is_empty() || body.len() > 4096 {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Message must contain 1 to 4096 bytes"
+        }));
+    }
+    if to_jid.parse::<jid::BareJid>().is_err() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Invalid recipient JID"
+        }));
+    }
     let xmpp_manager = xmpp_state.lock().await;
 
     match xmpp_manager.send_message(to_jid, body).await {
@@ -481,6 +510,9 @@ async fn xmpp_set_presence(
 #[command]
 async fn xmpp_add_contact(xmpp_state: State<'_, XmppState>, jid: String) -> Result<String, String> {
     log::info!("XMPP add contact command called");
+    if jid.parse::<jid::BareJid>().is_err() {
+        return Err("Invalid contact JID".to_string());
+    }
     let xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.add_contact(jid).await?;
     Ok("Contact addition request sent".to_string())
@@ -569,11 +601,23 @@ async fn xmpp_get_connection_status(
 // Connects via direct TLS, sends IBR IQ get/set, returns result.
 #[command]
 async fn xmpp_register(jid: String, password: String) -> Result<serde_json::Value, String> {
-    use std::collections::BTreeMap;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio_xmpp::parsers::ibr::Query as IbrQuery;
+    use tokio_xmpp::parsers::ibr::{FieldsQuery, LegacyQuery};
     use tokio_xmpp::parsers::iq::Iq as RegIq;
+
+    if password.is_empty() || password.len() > 1024 {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Password must contain 1 to 1024 bytes"
+        }));
+    }
+    if jid.len() > 320 {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "JID is too long"
+        }));
+    }
 
     log::info!(
         "xmpp_register: attempting IBR registration for JID: {}",
@@ -590,15 +634,18 @@ async fn xmpp_register(jid: String, password: String) -> Result<serde_json::Valu
         .to_string();
     let domain = bare_jid.domain().to_string();
 
-    // Direct-TLS connect (port 5223 – same transport as the main client)
-    let tcp = TcpStream::connect(format!("{}:5223", domain))
+    // Direct-TLS connect (NTO_XMPP_HOST/PORT override only; default port 5223)
+    let host = std::env::var("NTO_XMPP_HOST").unwrap_or_else(|_| domain.clone());
+    let port = xmpp_port();
+    let tcp = TcpStream::connect(format!("{host}:{port}"))
         .await
-        .map_err(|e| format!("TCP connect to {}:5223 failed: {}", domain, e))?;
+        .map_err(|e| format!("TCP connect to {host}:{port} failed: {e}"))?;
 
     let native_connector = {
         let mut builder = native_tls::TlsConnector::builder();
-        #[cfg(debug_assertions)]
-        builder.danger_accept_invalid_certs(true);
+        if xmpp_allow_invalid_certs() {
+            builder.danger_accept_invalid_certs(true);
+        }
         builder
             .build()
             .map_err(|e| format!("TLS connector creation failed: {}", e))?
@@ -644,13 +691,7 @@ async fn xmpp_register(jid: String, password: String) -> Result<serde_json::Valu
     }
 
     // Send IBR IQ get (request available registration fields)
-    let get_query = IbrQuery {
-        fields: BTreeMap::new(),
-        registered: false,
-        remove: false,
-        form: None,
-    };
-    let get_iq = RegIq::from_get("reg1", get_query);
+    let get_iq = RegIq::from_get("reg1", FieldsQuery);
     let get_elem = minidom::Element::from(get_iq);
     let mut get_xml = Vec::new();
     get_elem
@@ -676,14 +717,10 @@ async fn xmpp_register(jid: String, password: String) -> Result<serde_json::Valu
 
     // Build and send IBR IQ set with username + password
     // minidom handles XML character escaping for field values
-    let mut fields = BTreeMap::new();
-    fields.insert("username".to_string(), username);
-    fields.insert("password".to_string(), password);
-    let set_query = IbrQuery {
-        fields,
-        registered: false,
-        remove: false,
-        form: None,
+    let set_query = LegacyQuery {
+        username: Some(username),
+        password: Some(password),
+        ..LegacyQuery::default()
     };
     let set_iq = RegIq::from_set("reg2", set_query);
     let set_elem = minidom::Element::from(set_iq);
