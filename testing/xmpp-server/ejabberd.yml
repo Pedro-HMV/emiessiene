@@ -56,6 +56,10 @@ acl:
 access_rules:
   local:
     allow: local
+  muc:
+    allow: local
+  muc_create:
+    allow: local
   c2s:
     deny: blocked
     allow: all
@@ -93,6 +97,15 @@ modules:
   mod_mam:
     assume_mam_usage: true
     default: always
+  mod_muc:
+    host: "conference.localhost"
+    access: muc
+    access_create: muc_create
+    access_persistent: muc_create
+    default_room_options:
+      persistent: true
+      mam: true
+      members_only: false
   mod_ping: {}
   mod_privacy: {}
   mod_private: {}

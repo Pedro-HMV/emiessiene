@@ -33,6 +33,7 @@ pub struct UpdateAvailabilityArgs {
 /// A single chat message, stored in the global per-conversation history.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
+    pub id: String,
     /// Bare JID of the sender (e.g. "alice@localhost"). For self-sent messages this is our own JID.
     pub from_jid: String,
     pub body: String,
@@ -42,10 +43,53 @@ pub struct ChatMessage {
     pub is_self: bool,
     /// true until the backend confirms the send succeeded.
     pub pending: bool,
+    pub author_nickname: Option<String>,
 }
 
 /// Global message store: bare JID → ordered conversation history.
 pub type MessageStore = HashMap<String, Vec<ChatMessage>>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GroupMember {
+    pub jid: String,
+    pub nickname: String,
+    pub role: String,
+    pub availability: Availability,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GroupInfo {
+    pub room_jid: String,
+    pub name: String,
+    pub owner: String,
+    pub subject: Option<String>,
+    pub members: Vec<GroupMember>,
+    pub muted: bool,
+    pub unread: usize,
+}
+
+impl Default for GroupInfo {
+    fn default() -> Self {
+        Self {
+            room_jid: String::new(),
+            name: String::new(),
+            owner: String::new(),
+            subject: None,
+            members: Vec::new(),
+            muted: false,
+            unread: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GroupInvite {
+    pub room_jid: String,
+    pub room_name: String,
+    pub inviter: String,
+}
+
+pub type GroupStore = HashMap<String, GroupInfo>;
 
 /// Args for the `xmpp_send_message` Tauri command.
 /// Tauri v1 maps snake_case parameter names to camelCase on the wire.

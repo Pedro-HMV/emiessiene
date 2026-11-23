@@ -25,6 +25,7 @@ tokio-xmpp = { version = "6", default-features = false, features = [
 jid = "0.12"
 futures = "0.3"
 minidom = "0.19"
+rxml = "0.14"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 sasl = "0.5"

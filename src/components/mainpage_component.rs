@@ -1,4 +1,5 @@
 use crate::app::invoke;
+use gloo_timers::callback::Interval;
 use leptos::ev::{FocusEvent, KeyboardEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -19,7 +20,8 @@ extern "C" {
 use super::friend_component::Friend;
 use super::models;
 use models::{
-    Availability, Friend, UpdateAvailabilityArgs, UpdateFlavourTextArgs, UpdateUsernameArgs, User,
+    Availability, Friend, GroupInfo, GroupInvite, GroupStore, UpdateAvailabilityArgs,
+    UpdateFlavourTextArgs, UpdateUsernameArgs, User,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -35,6 +37,19 @@ struct SubscriptionArgs {
 #[derive(Serialize)]
 struct FetchContactVcardArgs {
     jid: String,
+}
+
+#[derive(Serialize)]
+struct CreateGroupArgs {
+    #[serde(rename = "roomName")]
+    room_name: String,
+    invitees: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct JoinGroupArgs {
+    #[serde(rename = "roomJid")]
+    room_jid: String,
 }
 
 #[component]
@@ -63,9 +78,76 @@ pub fn MainPage() -> impl IntoView {
     let set_friends =
         use_context::<WriteSignal<(Vec<Friend>, Vec<Friend>)>>().expect("No set friends context");
 
+    let presence_refresh = Interval::new(5000, {
+        let set_friends = set_friends;
+        move || {
+            let set_friends = set_friends;
+            spawn_local(async move {
+                let cached = invoke(
+                    "xmpp_get_presence_cache",
+                    to_value(&serde_json::json!({})).unwrap(),
+                )
+                .await;
+                if let Ok(presences) = from_value::<Vec<serde_json::Value>>(cached) {
+                    set_friends.update(|(online, offline)| {
+                        for presence in presences {
+                            let jid = presence["jid"].as_str().unwrap_or("").to_string();
+                            let availability = match presence["availability"].as_str() {
+                                Some("Away") => Availability::Away,
+                                Some("Busy") => Availability::Busy,
+                                Some("Offline") => Availability::Offline,
+                                _ => Availability::Online,
+                            };
+                            if jid.is_empty() {
+                                continue;
+                            }
+                            let friend = online
+                                .iter_mut()
+                                .find(|friend| friend.email == jid)
+                                .or_else(|| offline.iter_mut().find(|friend| friend.email == jid));
+                            if let Some(friend) = friend {
+                                friend.availability = availability;
+                            }
+                        }
+                        let all: Vec<Friend> = online.drain(..).chain(offline.drain(..)).collect();
+                        for friend in all {
+                            if matches!(friend.availability, Availability::Offline) {
+                                offline.push(friend);
+                            } else {
+                                online.push(friend);
+                            }
+                        }
+                        online.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        offline.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                    });
+                }
+            });
+        }
+    });
+    std::mem::forget(presence_refresh);
+
     let (add_friend_jid, set_add_friend_jid) = signal(String::new());
     let (add_friend_status, set_add_friend_status) = signal(Option::<String>::None);
+    let (group_route, set_group_route) = signal(Option::<String>::None);
     let (pending_requests, set_pending_requests) = signal(Vec::<String>::new());
+    let (show_group_modal, set_show_group_modal) = signal(false);
+    let (group_name, set_group_name) = signal(String::new());
+    let (selected_group_members, set_selected_group_members) = signal(Vec::<String>::new());
+    let (group_create_status, set_group_create_status) = signal(Option::<String>::None);
+    let groups = use_context::<RwSignal<GroupStore>>().expect("No groups context");
+    let pending_group_invites =
+        use_context::<ReadSignal<Vec<GroupInvite>>>().expect("No pending group invites context");
+    let set_pending_group_invites = use_context::<WriteSignal<Vec<GroupInvite>>>()
+        .expect("No pending group invite setter context");
+    Effect::new({
+        let navigate = navigate.clone();
+        move |_| {
+            if let Some(route) = group_route.get() {
+                navigate(&route, Default::default());
+                set_group_route.set(None);
+            }
+        }
+    });
 
     let add_friend = move |_| {
         let jid = add_friend_jid.get_untracked().trim().to_string();
@@ -87,6 +169,85 @@ pub fn MainPage() -> impl IntoView {
                 Err(e) => {
                     let msg = format!("Error: {:?}", e);
                     set_add_friend_status.set(Some(msg));
+                }
+            }
+        });
+    };
+
+    let toggle_group_member = move |jid: String| {
+        set_selected_group_members.update(|selected| {
+            if selected.contains(&jid) {
+                selected.retain(|item| item != &jid);
+            } else {
+                selected.push(jid);
+            }
+        });
+    };
+
+    let create_group = move |_| {
+        let name = group_name.get_untracked().trim().to_string();
+        if name.is_empty() {
+            set_group_create_status.set(Some("Group name is required".to_string()));
+            return;
+        }
+        let invitees = selected_group_members.get_untracked();
+        set_group_create_status.set(Some("Creating group...".to_string()));
+        spawn_local(async move {
+            match invoke_catching(
+                "xmpp_create_group",
+                to_value(&CreateGroupArgs {
+                    room_name: name.clone(),
+                    invitees,
+                })
+                .unwrap(),
+            )
+            .await
+            {
+                Ok(result) => match from_value::<serde_json::Value>(result) {
+                    Ok(response) if response["success"].as_bool().unwrap_or(false) => {
+                        let room_jid = response["room_jid"].as_str().unwrap_or("").to_string();
+                        if !room_jid.is_empty() {
+                            groups.update(|store| {
+                                store.insert(
+                                    room_jid.clone(),
+                                    GroupInfo {
+                                        room_jid: room_jid.clone(),
+                                        name: name.clone(),
+                                        owner: user.get_untracked().email,
+                                        subject: Some(name.clone()),
+                                        members: Vec::new(),
+                                        muted: false,
+                                        unread: 0,
+                                    },
+                                );
+                            });
+                            set_open_chats.update(|chats| {
+                                if !chats.contains(&room_jid) {
+                                    chats.push(room_jid.clone());
+                                }
+                            });
+                            set_show_group_modal.set(false);
+                            set_group_name.set(String::new());
+                            set_selected_group_members.set(Vec::new());
+                            set_group_create_status.set(Some(format!("Group '{}' created", name)));
+                            set_group_route.set(Some(format!("/chat/{}", room_jid)));
+                        }
+                    }
+                    Ok(response) => {
+                        set_group_create_status.set(Some(
+                            response["error"]
+                                .as_str()
+                                .unwrap_or("Failed to create group")
+                                .to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        set_group_create_status
+                            .set(Some(format!("Failed to create group: {error:?}")));
+                    }
+                },
+                Err(error) => {
+                    set_group_create_status.set(Some(format!("Failed to create group: {error:?}")));
                 }
             }
         });
@@ -508,6 +669,11 @@ pub fn MainPage() -> impl IntoView {
                 to_value(&serde_json::json!({})).unwrap(),
             )
             .await;
+            let _ = invoke(
+                "xmpp_fetch_history",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
             let result = invoke(
                 "get_pending_subscriptions",
                 to_value(&serde_json::json!({})).unwrap(),
@@ -521,6 +687,20 @@ pub fn MainPage() -> impl IntoView {
                         }
                     });
                 }
+            }
+            let result = invoke(
+                "get_pending_group_invites",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
+            if let Ok(invites) = from_value::<Vec<GroupInvite>>(result) {
+                set_pending_group_invites.update(|pending| {
+                    for invite in invites {
+                        if !pending.iter().any(|item| item.room_jid == invite.room_jid) {
+                            pending.push(invite);
+                        }
+                    }
+                });
             }
         });
     }
@@ -639,7 +819,21 @@ pub fn MainPage() -> impl IntoView {
             .iter()
             .map(|jid| {
                 let jid = jid.clone();
-                let display_name = friend_name_for_jid(&jid);
+                let display_name = if jid.contains("@conference.") {
+                    groups
+                        .get()
+                        .get(&jid)
+                        .map(|group| {
+                            if group.unread == 0 {
+                                group.name.clone()
+                            } else {
+                                format!("{} ({})", group.name, group.unread)
+                            }
+                        })
+                        .unwrap_or_else(|| "Group".to_string())
+                } else {
+                    friend_name_for_jid(&jid)
+                };
                 let jid_close = jid.clone();
                 let close_chat = close_chat.clone();
                 view! {
@@ -651,7 +845,7 @@ pub fn MainPage() -> impl IntoView {
                             class="chat-tab-close"
                             on:click=move |_| close_chat(jid_close.clone())
                         >
-                            "❌"
+                            <img src="/assets/nto_icons_png/close.png" alt="Close chat" class="chat-tab-close-icon" />
                         </button>
                     </div>
                 }
@@ -661,12 +855,17 @@ pub fn MainPage() -> impl IntoView {
 
     view! {
         <div id="main-container" class="flex-col">
-            <div class="chat-tabs">{chat_tabs}</div>
+            <div class="chat-tabs">
+                <img src="/assets/nto-connected-brand-assets/nto-app-icon-64.png" alt="" class="chat-tabs-brand" />
+                {chat_tabs}
+            </div>
             <header>
                 <div id="header_container" class="flex-row p-10 border-st">
                     <div id="header_left">
                         <div id="header_avatar">
-                            <div id="avatar_img" style="width: 90px; height: 90px;"></div>
+                            <div id="avatar_img" style="width: 90px; height: 90px;">
+                                <img src="/assets/nto_icons_png/profile.png" alt="Profile" class="header-profile-icon" />
+                            </div>
                         </div>
                     </div>
                     <div id="header_right" class="ml-1">
@@ -848,6 +1047,87 @@ pub fn MainPage() -> impl IntoView {
                         .map(|s| view! { <span class="add-friend-status">{s}</span> })
                 }}
             </div>
+            <div class="group-actions">
+                <button
+                    class="create-group-button"
+                    on:click=move |_| set_show_group_modal.set(true)
+                >
+                    "＋ New group"
+                </button>
+            </div>
+            <Show when=move || !pending_group_invites.get().is_empty()>
+                <div class="pending-group-list">
+                    <span class="bold">"Group invitations"</span>
+                    <For
+                        each=move || pending_group_invites.get()
+                        key=|invite| invite.room_jid.clone()
+                        children=move |invite| {
+                            let accept_room = invite.room_jid.clone();
+                            let accept_name = invite.room_name.clone();
+                            let decline_room = invite.room_jid.clone();
+                            view! {
+                                <div class="pending-group-item">
+                                    <span>{accept_name.clone()}</span>
+                                    <button
+                                        class="pending-accept"
+                                        on:click=move |_| {
+                                            let room_jid = accept_room.clone();
+                                            let name = accept_name.clone();
+                                            spawn_local(async move {
+                                                let result = invoke_catching(
+                                                    "xmpp_join_group",
+                                                    to_value(&JoinGroupArgs {
+                                                        room_jid: room_jid.clone(),
+                                                    })
+                                                    .unwrap(),
+                                                )
+                                                .await;
+                                                if result.is_ok() {
+                                                    groups.update(|store| {
+                                                        store.insert(
+                                                            room_jid.clone(),
+                                                            GroupInfo {
+                                                                room_jid: room_jid.clone(),
+                                                                name,
+                                                                owner: String::new(),
+                                                                subject: None,
+                                                                members: Vec::new(),
+                                                                muted: false,
+                                                                unread: 0,
+                                                            },
+                                                        );
+                                                    });
+                                                    set_pending_group_invites.update(|pending| {
+                                                        pending.retain(|item| item.room_jid != room_jid);
+                                                    });
+                                                    set_open_chats.update(|chats| {
+                                                        if !chats.contains(&room_jid) {
+                                                            chats.push(room_jid.clone());
+                                                        }
+                                                    });
+                                                    set_group_route.set(Some(format!("/chat/{}", room_jid)));
+                                                }
+                                            });
+                                        }
+                                    >
+                                        "Accept"
+                                    </button>
+                                    <button
+                                        class="pending-deny"
+                                        on:click=move |_| {
+                                            set_pending_group_invites.update(|pending| {
+                                                pending.retain(|item| item.room_jid != decline_room);
+                                            });
+                                        }
+                                    >
+                                        "Decline"
+                                    </button>
+                                </div>
+                            }
+                        }
+                    />
+                </div>
+            </Show>
             <div id="friends-container" class="flex-col flex-grow bg-white auto-y">
                 // Pending friend requests section (styled like Friends/Offline groups)
                 <Show when=move || !pending_requests.get().is_empty()>
@@ -872,7 +1152,9 @@ pub fn MainPage() -> impl IntoView {
                                     .to_string();
                                 view! {
                                     <li class="pending-item">
-                                        <span class="pending-avatar">"👤"</span>
+                                        <span class="pending-avatar">
+                                            <img src="/assets/nto_icons_png/profile.png" alt="" class="pending-profile-icon" />
+                                        </span>
                                         <span class="pending-jid">{display_name}</span>
                                         <button
                                             class="pending-accept"
@@ -995,6 +1277,82 @@ pub fn MainPage() -> impl IntoView {
                     />
                 </ul>
             </div>
+            <Show when=move || show_group_modal.get()>
+                <div class="group-modal-backdrop">
+                    <div class="group-modal" role="dialog" aria-modal="true" aria-labelledby="group-modal-title">
+                        <div class="group-modal-header">
+                            <h2 id="group-modal-title">"Create a group"</h2>
+                            <button
+                                type="button"
+                                class="group-modal-close"
+                                title="Close"
+                                on:click=move |_| set_show_group_modal.set(false)
+                            >
+                                "×"
+                            </button>
+                        </div>
+                        <label for="group-name">"Group name"</label>
+                        <input
+                            id="group-name"
+                            type="text"
+                            maxlength="80"
+                            placeholder="Family, team, friends..."
+                            prop:value=move || group_name.get()
+                            on:input=move |ev| set_group_name.set(event_target_value(&ev))
+                        />
+                        <div class="group-member-heading">
+                            "Invite online friends"
+                            <span>{move || format!(" ({})", selected_group_members.get().len())}</span>
+                        </div>
+                        <div class="group-member-list">
+                            {move || {
+                                let (online, _) = friends.get();
+                                online
+                                    .into_iter()
+                                    .map(|friend| {
+                                        let jid = friend.email.clone();
+                                        let jid_toggle = jid.clone();
+                                        let selected = selected_group_members.get().contains(&jid);
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class="group-member-option"
+                                                class:selected=selected
+                                                on:click=move |_| toggle_group_member(jid_toggle.clone())
+                                            >
+                                                <span class="group-member-avatar">"👤"</span>
+                                                <span class="group-member-name">{friend.name.clone()}</span>
+                                                <span class="group-member-check">
+                                                    {if selected { "✓" } else { "" }}
+                                                </span>
+                                            </button>
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                            }}
+                        </div>
+                        {move || group_create_status.get().map(|status| view! {
+                            <div class="group-create-status">{status}</div>
+                        })}
+                        <div class="group-modal-actions">
+                            <button
+                                type="button"
+                                class="group-modal-cancel"
+                                on:click=move |_| set_show_group_modal.set(false)
+                            >
+                                "Cancel"
+                            </button>
+                            <button
+                                type="button"
+                                class="group-modal-confirm"
+                                on:click=create_group
+                            >
+                                "Create group"
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </Show>
         </div>
     }
 }

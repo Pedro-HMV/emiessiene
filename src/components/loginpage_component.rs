@@ -20,10 +20,26 @@ struct XmppConnectArgs {
     password: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct DebugCliLogin {
+    username: String,
+    password: String,
+}
+
 #[derive(Serialize)]
 struct SetPresenceArgs {
     availability: Availability,
     status: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AddTestFriendArgs {
+    jid: String,
+}
+
+#[derive(Serialize)]
+struct UpdateDebugUsernameArgs {
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -173,12 +189,29 @@ pub fn LoginPage() -> impl IntoView {
                                     // the xmpp_vcard_received listener will update it once vCard arrives
                                     let local_part =
                                         jid.split('@').next().unwrap_or(&jid).to_string();
+                                    let display_name = match local_part.as_str() {
+                                        "testuser" => "Pedro",
+                                        "kampelo" => "Kampelo",
+                                        "ivokds" => "Ivokds",
+                                        _ => local_part.as_str(),
+                                    };
                                     set_user.update(|user| {
                                         user.email = jid.clone();
-                                        user.name = local_part;
+                                        user.name = display_name.to_string();
                                         user.availability = availability_value.clone();
                                         user.flavour_text = String::new();
                                     });
+                                    #[cfg(debug_assertions)]
+                                    {
+                                        let _ = invoke_catching(
+                                            "update_username",
+                                            to_value(&UpdateDebugUsernameArgs {
+                                                name: display_name.to_string(),
+                                            })
+                                            .unwrap(),
+                                        )
+                                        .await;
+                                    }
 
                                     // Save login prefs (JID only stored if remember_me is true)
                                     let avail_str = match availability_value {
@@ -207,6 +240,27 @@ pub fn LoginPage() -> impl IntoView {
                                             .unwrap(),
                                         )
                                         .await;
+                                    }
+
+                                    #[cfg(debug_assertions)]
+                                    {
+                                        let test_accounts = [
+                                            "testuser@localhost",
+                                            "kampelo@localhost",
+                                            "ivokds@localhost",
+                                        ];
+                                        for peer_jid in test_accounts {
+                                            if peer_jid != jid {
+                                                let _ = invoke_catching(
+                                                    "xmpp_add_contact",
+                                                    to_value(&AddTestFriendArgs {
+                                                        jid: peer_jid.to_string(),
+                                                    })
+                                                    .unwrap(),
+                                                )
+                                                .await;
+                                            }
+                                        }
                                     }
 
                                     // Listen for vCard response and update user name/flavour_text
@@ -277,6 +331,13 @@ pub fn LoginPage() -> impl IntoView {
                                     )
                                     .await;
 
+                                    // Replay MAM history after the global listener is ready.
+                                    let _ = invoke_catching(
+                                        "xmpp_fetch_history",
+                                        to_value(&serde_json::json!({})).unwrap(),
+                                    )
+                                    .await;
+
                                     set_is_loading.set(false);
                                     set_should_navigate.set(true);
                                 } else {
@@ -336,6 +397,36 @@ pub fn LoginPage() -> impl IntoView {
         }
     };
 
+    #[cfg(debug_assertions)]
+    {
+        let do_sign_in = do_sign_in.clone();
+        let set_username = set_username;
+        let set_password = set_password;
+        spawn_local(async move {
+            if let Some(window) = web_sys::window() {
+                if let Ok(Some(storage)) = window.session_storage() {
+                    if storage
+                        .get_item("nto_skip_auto_cli_login")
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        let _ = storage.remove_item("nto_skip_auto_cli_login");
+                        return;
+                    }
+                }
+            }
+            if let Ok(result) = invoke_catching("get_debug_cli_login", JsValue::null()).await {
+                if let Ok(Some(login)) = from_value::<Option<DebugCliLogin>>(result) {
+                    set_username.set(login.username);
+                    set_password.set(login.password);
+                    gloo_timers::future::TimeoutFuture::new(100).await;
+                    do_sign_in();
+                }
+            }
+        });
+    }
+
     view! {
         <Show when=move || fatal_error.get().is_some()>
             <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:9999;">
@@ -362,12 +453,13 @@ pub fn LoginPage() -> impl IntoView {
         <div id="login_container">
             <div id="login_title">
                 <span id="login_welcome">"Welcome to"</span>
-                "NTO"
+                <span id="login_product_name">"NTO"</span>
+                <span id="login_brand_subtitle">"Nostalgic Talk Online"</span>
             </div>
             <div id="login_avatar">
                 <div
                     id="login_avatar_img"
-                    style="width: 150px; height: 150px; background: linear-gradient(145deg, #5a8faa 0%, #3d6a84 55%, #2a4f68 100%); border-radius: 10px; box-shadow: inset 0 1px 2px rgba(255,255,255,0.55), inset 0 -1px 2px rgba(0,0,0,0.25), 0 3px 8px rgba(0,0,0,0.4); outline: 1px solid rgba(255,255,255,0.3); outline-offset: -3px;"
+                    style="width: 150px; height: 150px; border-radius: 10px;"
                 ></div>
             </div>
             <form id="login_form">

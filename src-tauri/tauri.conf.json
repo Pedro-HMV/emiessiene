@@ -25,12 +25,15 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "NTO - alpha version",
+        "title": "NTO - Nostalgic Talk Online",
         "fullscreen": false,
-        "width": 1080,
-        "height": 720,
-        "minWidth": 440,
-        "minHeight": 500
+        "maximized": true,
+        "resizable": true,
+        "width": 1920,
+        "height": 1080,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true
       }
     ],
     "security": {

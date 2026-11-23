@@ -84,6 +84,7 @@ pub fn RegisterPage() -> impl IntoView {
 
     view! {
         <div id="register_container" class="flex-col">
+            <img src="/assets/nto-connected-brand-assets/nto-logo.png" alt="NTO" class="register-brand-logo" />
             <div id="register_title">"Create NTO Account"</div>
             <div id="register_subtitle">"Join the nostalgic messaging experience"</div>
 

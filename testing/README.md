@@ -54,4 +54,24 @@ PowerShell scripts for automated testing are located in the `scripts/` subdirect
 
 ## Manual Testing
 
+### Three NTO instances
+
+Start ejabberd, the `cargo tauri dev` instance, and two `target\debug\nto.exe` instances:
+
+```powershell
+.\testing\scripts\test-three-instances.ps1 -StartXmpp
+```
+
+Use `-KeepDevRunning` to keep the launcher process waiting for the development instance:
+
+```powershell
+.\testing\scripts\test-three-instances.ps1 -StartXmpp -KeepDevRunning
+```
+
+Stop the local XMPP container:
+
+```powershell
+.\testing\scripts\test-three-instances.ps1 -StopXmpp
+```
+
 See `manual-testing.md` for manual testing procedures and checklists.

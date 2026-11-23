@@ -26,6 +26,9 @@ pub struct XmppMessage {
     pub body: String,
     pub timestamp: String,
     pub message_type: String,
+    pub is_self: bool,
+    pub group_room: Option<String>,
+    pub author_nickname: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,6 +36,13 @@ pub struct XmppPresence {
     pub jid: String,
     pub availability: Availability,
     pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct XmppGroupInvite {
+    pub room_jid: String,
+    pub room_name: String,
+    pub inviter: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -46,6 +56,35 @@ enum OutgoingCmd {
     SendMessage {
         to: String,
         body: String,
+    },
+    SendNudge {
+        to: String,
+    },
+    SendGroupMessage {
+        room_jid: String,
+        body: String,
+    },
+    JoinGroup {
+        room_jid: String,
+        nickname: String,
+    },
+    LeaveGroup {
+        room_jid: String,
+        nickname: String,
+    },
+    SendGroupInvite {
+        room_jid: String,
+        room_name: String,
+        inviter: String,
+        invitee: String,
+    },
+    SetGroupSubject {
+        room_jid: String,
+        subject: String,
+    },
+    RemoveGroupMember {
+        room_jid: String,
+        member_jid: String,
     },
     SetPresence {
         show: Option<String>,
@@ -61,6 +100,10 @@ enum OutgoingCmd {
         jid: String,
     },
     RequestRoster,
+    FetchHistory,
+    FetchGroupHistory {
+        room_jid: String,
+    },
     AddContact {
         jid: String,
     },
@@ -78,6 +121,7 @@ struct XmppEventLoopState {
     status: Arc<Mutex<ConnectionStatus>>,
     own_jid: String,
     pending_subscriptions: Arc<Mutex<Vec<String>>>,
+    pending_group_invites: Arc<Mutex<Vec<XmppGroupInvite>>>,
     presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
     current_show: Arc<Mutex<Option<String>>>,
 }
@@ -183,6 +227,7 @@ pub struct XmppManager {
     connection_status: Arc<Mutex<ConnectionStatus>>,
     app_handle: Option<tauri::AppHandle>,
     pending_subscriptions: Arc<Mutex<Vec<String>>>,
+    pending_group_invites: Arc<Mutex<Vec<XmppGroupInvite>>>,
     /// Cache of last-known presence per bare JID. Populated by the event loop,
     /// read by `xmpp_get_presence_cache` so MainPage can replay on mount.
     presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
@@ -204,6 +249,7 @@ impl XmppManager {
             })),
             app_handle: None,
             pending_subscriptions: Arc::new(Mutex::new(Vec::new())),
+            pending_group_invites: Arc::new(Mutex::new(Vec::new())),
             presence_cache: Arc::new(Mutex::new(HashMap::new())),
             current_show: Arc::new(Mutex::new(None)),
         }
@@ -215,6 +261,8 @@ impl XmppManager {
 
     pub async fn connect(&mut self, jid_str: String, password: String) -> Result<(), String> {
         info!("Attempting XMPP connection for JID: {}", jid_str);
+        self.presence_cache.lock().await.clear();
+        self.presence_cache.lock().await.clear();
 
         // Disconnect any existing connection first
         if self.sender.is_some() {
@@ -263,6 +311,7 @@ impl XmppManager {
         let own_jid = jid_str.clone();
 
         let pending_subs_arc = self.pending_subscriptions.clone();
+        let pending_group_invites_arc = self.pending_group_invites.clone();
         let presence_cache_arc = self.presence_cache.clone();
         let current_show_arc = self.current_show.clone();
 
@@ -275,6 +324,7 @@ impl XmppManager {
                 status: status_arc,
                 own_jid,
                 pending_subscriptions: pending_subs_arc,
+                pending_group_invites: pending_group_invites_arc,
                 presence_cache: presence_cache_arc,
                 current_show: current_show_arc,
             },
@@ -313,6 +363,22 @@ impl XmppManager {
         outcome
     }
 
+    pub async fn send_nudge(&self, to_jid: String) -> Result<(), String> {
+        if to_jid.contains("@conference.") {
+            return Err("Nudge is not supported for group chats".to_string());
+        }
+        let status = self.connection_status.lock().await;
+        if !status.connected {
+            return Err("Not connected to XMPP server".to_string());
+        }
+        drop(status);
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::SendNudge { to: to_jid })
+            .await
+            .map_err(|e| format!("Failed to queue nudge: {e}"))
+    }
+
     pub async fn send_message(&self, to_jid: String, body: String) -> Result<(), String> {
         info!("Queueing message send to {}", to_jid);
         {
@@ -326,6 +392,219 @@ impl XmppManager {
             .send(OutgoingCmd::SendMessage { to: to_jid, body })
             .await
             .map_err(|e| format!("Failed to queue message: {}", e))
+    }
+
+    pub async fn create_group(
+        &self,
+        room_name: String,
+        invitees: Vec<String>,
+    ) -> Result<String, String> {
+        let status = self.connection_status.lock().await;
+        if !status.connected {
+            return Err("Not connected to XMPP server".to_string());
+        }
+        let own_bare = status
+            .jid
+            .as_deref()
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        drop(status);
+        if own_bare.is_empty() {
+            return Err("Current JID is unavailable".to_string());
+        }
+        let name = room_name.trim();
+        if name.is_empty() || name.len() > 80 {
+            return Err("Group name must contain 1 to 80 characters".to_string());
+        }
+        let slug = name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        if slug.is_empty() {
+            return Err("Group name must contain a letter or number".to_string());
+        }
+        let room_id = format!("{slug}-{}", uuid::Uuid::new_v4());
+        let room_jid = format!("{room_id}@conference.localhost");
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        let nickname = own_bare.split('@').next().unwrap_or("owner").to_string();
+        sender
+            .send(OutgoingCmd::JoinGroup {
+                room_jid: room_jid.clone(),
+                nickname: nickname.clone(),
+            })
+            .await
+            .map_err(|e| format!("Failed to join created group: {e}"))?;
+        sender
+            .send(OutgoingCmd::SetGroupSubject {
+                room_jid: room_jid.clone(),
+                subject: name.to_string(),
+            })
+            .await
+            .map_err(|e| format!("Failed to set group name: {e}"))?;
+        for invitee in invitees {
+            sender
+                .send(OutgoingCmd::SendGroupInvite {
+                    room_jid: room_jid.clone(),
+                    room_name: name.to_string(),
+                    inviter: own_bare.clone(),
+                    invitee,
+                })
+                .await
+                .map_err(|e| format!("Failed to queue group invite: {e}"))?;
+        }
+        Ok(room_jid)
+    }
+
+    pub async fn invite_to_group(
+        &self,
+        room_jid: String,
+        room_name: String,
+        invitees: Vec<String>,
+    ) -> Result<(), String> {
+        let status = self.connection_status.lock().await;
+        if !status.connected {
+            return Err("Not connected to XMPP server".to_string());
+        }
+        let inviter = status
+            .jid
+            .as_deref()
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        drop(status);
+        if inviter.is_empty() {
+            return Err("Current JID is unavailable".to_string());
+        }
+        if room_jid.parse::<jid::BareJid>().is_err() || !room_jid.contains("@conference.") {
+            return Err("Invalid MUC room JID".to_string());
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        for invitee in invitees {
+            if invitee.parse::<jid::BareJid>().is_err() {
+                return Err(format!("Invalid invitee JID: {invitee}"));
+            }
+            sender
+                .send(OutgoingCmd::SendGroupInvite {
+                    room_jid: room_jid.clone(),
+                    room_name: room_name.clone(),
+                    inviter: inviter.clone(),
+                    invitee,
+                })
+                .await
+                .map_err(|e| format!("Failed to queue group invite: {e}"))?;
+        }
+        Ok(())
+    }
+
+    pub async fn join_group(&self, room_jid: String) -> Result<(), String> {
+        let status = self.connection_status.lock().await;
+        if !status.connected {
+            return Err("Not connected to XMPP server".to_string());
+        }
+        let own_bare = status
+            .jid
+            .as_deref()
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        drop(status);
+        let nickname = own_bare.split('@').next().unwrap_or("member").to_string();
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::JoinGroup {
+                room_jid: room_jid.clone(),
+                nickname: nickname.clone(),
+            })
+            .await
+            .map_err(|e| format!("Failed to join group: {e}"))?;
+        self.pending_group_invites
+            .lock()
+            .await
+            .retain(|invite| invite.room_jid != room_jid);
+        Ok(())
+    }
+
+    pub async fn send_group_message(&self, room_jid: String, body: String) -> Result<(), String> {
+        if body.trim().is_empty() || body.len() > 4096 {
+            return Err("Message must contain 1 to 4096 bytes".to_string());
+        }
+        let status = self.connection_status.lock().await;
+        if !status.connected {
+            return Err("Not connected to XMPP server".to_string());
+        }
+        drop(status);
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::SendGroupMessage { room_jid, body })
+            .await
+            .map_err(|e| format!("Failed to queue group message: {e}"))
+    }
+
+    pub async fn leave_group(&self, room_jid: String) -> Result<(), String> {
+        let status = self.connection_status.lock().await;
+        let nickname = status
+            .jid
+            .as_deref()
+            .unwrap_or("member")
+            .split('/')
+            .next()
+            .unwrap_or("member")
+            .split('@')
+            .next()
+            .unwrap_or("member")
+            .to_string();
+        drop(status);
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::LeaveGroup { room_jid, nickname })
+            .await
+            .map_err(|e| format!("Failed to queue group leave: {e}"))
+    }
+
+    pub async fn set_group_subject(&self, room_jid: String, subject: String) -> Result<(), String> {
+        if subject.trim().is_empty() || subject.len() > 80 {
+            return Err("Group name must contain 1 to 80 characters".to_string());
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::SetGroupSubject { room_jid, subject })
+            .await
+            .map_err(|e| format!("Failed to queue group subject update: {e}"))
+    }
+
+    pub async fn remove_group_member(
+        &self,
+        room_jid: String,
+        member_jid: String,
+    ) -> Result<(), String> {
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::RemoveGroupMember {
+                room_jid,
+                member_jid,
+            })
+            .await
+            .map_err(|e| format!("Failed to queue member removal: {e}"))
+    }
+
+    pub async fn drain_pending_group_invites(&self) -> Vec<XmppGroupInvite> {
+        let mut invites = self.pending_group_invites.lock().await;
+        invites.drain(..).collect()
     }
 
     pub async fn set_presence(
@@ -385,6 +664,36 @@ impl XmppManager {
             .map_err(|e| format!("Failed to queue roster request: {}", e))
     }
 
+    pub async fn fetch_history(&self) -> Result<(), String> {
+        info!("Queueing MAM history request");
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::FetchHistory)
+            .await
+            .map_err(|e| format!("Failed to queue MAM history request: {}", e))
+    }
+
+    pub async fn fetch_group_history(&self, room_jid: String) -> Result<(), String> {
+        info!("Queueing MUC-MAM history request for {}", room_jid);
+        {
+            let status = self.connection_status.lock().await;
+            if !status.connected {
+                return Err("Not connected to XMPP server".to_string());
+            }
+        }
+        let sender = self.sender.as_ref().ok_or("Not connected")?;
+        sender
+            .send(OutgoingCmd::FetchGroupHistory { room_jid })
+            .await
+            .map_err(|e| format!("Failed to queue MUC-MAM history request: {e}"))
+    }
+
     pub async fn fetch_vcard(&self) -> Result<(), String> {
         info!("Queueing vCard fetch");
         {
@@ -417,6 +726,32 @@ impl XmppManager {
 
     pub async fn get_presence_cache(&self) -> Vec<XmppPresence> {
         self.presence_cache.lock().await.values().cloned().collect()
+    }
+
+    #[cfg(debug_assertions)]
+    pub async fn seed_debug_test_presence(&self) {
+        let own = self
+            .connection_status
+            .lock()
+            .await
+            .jid
+            .clone()
+            .unwrap_or_default();
+        let own_bare = own.split('/').next().unwrap_or("").to_string();
+        let mut cache = self.presence_cache.lock().await;
+        for username in ["testuser", "kampelo", "ivokds"] {
+            let jid = format!("{username}@localhost");
+            if jid != own_bare {
+                cache.insert(
+                    jid.clone(),
+                    XmppPresence {
+                        jid,
+                        availability: Availability::Online,
+                        status: Some("Online".to_string()),
+                    },
+                );
+            }
+        }
     }
 
     pub async fn broadcast_presence(&self) -> Result<(), String> {
@@ -504,6 +839,7 @@ impl XmppManager {
             status.connected = false;
             status.jid = None;
         }
+        self.presence_cache.lock().await.clear();
 
         if let Some(ref app_handle) = self.app_handle {
             let status = ConnectionStatus {
@@ -592,16 +928,232 @@ async fn xmpp_event_loop(
                             warn!("Skipping error message stanza from {:?}", msg.from);
                             continue;
                         }
+
+                        if let Some(nudge) = msg.payloads.iter().find(|payload| {
+                            payload.name() == "nudge" && payload.ns() == "urn:xmpp:nudge:0"
+                        }) {
+                            let _ = nudge;
+                            let from_full = msg
+                                .from
+                                .as_ref()
+                                .map(|jid| jid.to_string())
+                                .unwrap_or_default();
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                                .to_string();
+                            let payload = serde_json::json!({
+                                "from": from_full,
+                                "timestamp": timestamp,
+                            });
+                            if let Err(e) = app_handle.emit("xmpp_nudge_received", &payload) {
+                                error!("Failed to emit xmpp_nudge_received: {}", e);
+                            }
+                            continue;
+                        }
+
+                        if let Some(muc_user) = msg.payloads.iter().find(|payload| {
+                            payload.name() == "x"
+                                && payload.ns() == "http://jabber.org/protocol/muc#user"
+                        }) {
+                            if let Some(invite) = muc_user.get_child(
+                                "invite",
+                                "http://jabber.org/protocol/muc#user",
+                            ) {
+                                let room_jid = invite
+                                    .attr("to")
+                                    .unwrap_or("")
+                                    .to_string();
+                                let inviter = invite
+                                    .attr("from")
+                                    .unwrap_or("")
+                                    .to_string();
+                                let room_name = msg
+                                    .get_best_subject(vec!["en", ""])
+                                    .map(|(_, subject)| subject.clone())
+                                    .filter(|subject| !subject.is_empty())
+                                    .unwrap_or_else(|| {
+                                        room_jid
+                                            .split('@')
+                                            .next()
+                                            .unwrap_or(&room_jid)
+                                            .to_string()
+                                    });
+                                if !room_jid.is_empty() {
+                                    let invite = XmppGroupInvite {
+                                        room_jid,
+                                        room_name,
+                                        inviter,
+                                    };
+                                    let mut invites =
+                                        state.pending_group_invites.lock().await;
+                                    if !invites.iter().any(|item| {
+                                        item.room_jid == invite.room_jid
+                                            && item.inviter == invite.inviter
+                                    }) {
+                                        invites.push(invite.clone());
+                                    }
+                                    let payload = serde_json::json!({
+                                        "room_jid": invite.room_jid,
+                                        "room_name": invite.room_name,
+                                        "inviter": invite.inviter,
+                                    });
+                                    if let Err(e) = app_handle.emit(
+                                        "xmpp_group_invite_received",
+                                        &payload,
+                                    ) {
+                                        error!("Failed to emit MUC invite: {}", e);
+                                    }
+                                }
+                            }
+                        }
+
+                        // XEP-0313 MAM replay wraps the original stanza inside <forwarded>.
+                        if let Some(forwarded) = msg.payloads.iter().find(|payload| {
+                            payload.name() == "forwarded" && payload.ns() == "urn:xmpp:forward:0"
+                        }) {
+                            if let Some(archived) = forwarded.get_child("message", "jabber:client") {
+                                let body = archived
+                                    .get_child("body", "jabber:client")
+                                    .map(|node| node.text())
+                                    .filter(|text| !text.is_empty());
+                                if let Some(body) = body {
+                                    let from_full = archived.attr("from").unwrap_or("").to_string();
+                                    let to_full = archived.attr("to").unwrap_or("").to_string();
+                                    let own_bare = state
+                                        .own_jid
+                                        .split('/')
+                                        .next()
+                                        .unwrap_or(&state.own_jid)
+                                        .to_string();
+                                    let from_bare = from_full
+                                        .split('/')
+                                        .next()
+                                        .unwrap_or(&from_full)
+                                        .to_string();
+                                    let to_bare = to_full
+                                        .split('/')
+                                        .next()
+                                        .unwrap_or(&to_full)
+                                        .to_string();
+                                    let is_groupchat = archived.attr("type") == Some("groupchat");
+                                    let archived_nickname = from_full
+                                        .split('/')
+                                        .nth(1)
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let own_nickname = state
+                                        .own_jid
+                                        .split('/')
+                                        .next()
+                                        .unwrap_or(&state.own_jid)
+                                        .split('@')
+                                        .next()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let is_self = if is_groupchat {
+                                        archived_nickname == own_nickname
+                                    } else {
+                                        from_bare == own_bare
+                                    };
+                                    let peer_jid = if is_self { to_bare } else { from_bare };
+                                    if peer_jid.is_empty() {
+                                        continue;
+                                    }
+                                    let timestamp = forwarded
+                                        .get_child("delay", "urn:xmpp:delay")
+                                        .and_then(|delay| delay.attr("stamp"))
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let timestamp = if timestamp.is_empty() {
+                                        let seconds = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs();
+                                        format!("{seconds}")
+                                    } else {
+                                        timestamp
+                                    };
+                                    let msg_id = archived
+                                        .attr("id")
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let group_room = if is_groupchat {
+                                        let from_room = from_full
+                                            .split('/')
+                                            .next()
+                                            .unwrap_or(&from_full)
+                                            .to_string();
+                                        let to_room = to_full
+                                            .split('/')
+                                            .next()
+                                            .unwrap_or(&to_full)
+                                            .to_string();
+                                        if from_room.contains("@conference.") {
+                                            Some(from_room)
+                                        } else if to_room.contains("@conference.") {
+                                            Some(to_room)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    let author_nickname = if is_groupchat {
+                                        from_full
+                                            .split('/')
+                                            .nth(1)
+                                            .or_else(|| to_full.split('/').nth(1))
+                                            .map(str::to_string)
+                                            .or_else(|| {
+                                                if is_self {
+                                                    None
+                                                } else {
+                                                    Some(from_full
+                                                        .split('@')
+                                                        .next()
+                                                        .unwrap_or(&from_full)
+                                                        .to_string())
+                                                }
+                                            })
+                                    } else {
+                                        None
+                                    };
+                                    let xmpp_msg = XmppMessage {
+                                        id: msg_id,
+                                        from: from_full,
+                                        to: to_full,
+                                        body,
+                                        timestamp,
+                                        message_type: "chat".to_string(),
+                                        is_self,
+                                        group_room,
+                                        author_nickname,
+                                    };
+                                    if let Err(e) =
+                                        app_handle.emit("xmpp_message_received", &xmpp_msg)
+                                    {
+                                        error!("Failed to emit archived xmpp_message_received: {}", e);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
                         if let Some((_, body_text)) = msg.get_best_body(vec!["en", ""]) {
                             let from_jid = msg.from.as_ref()
                                 .map(|j| j.to_string())
                                 .unwrap_or_default();
+                            if msg.type_ == MessageType::Groupchat {
+                                info!("Received MUC message from {}", from_jid);
+                            }
                             let msg_id = msg.id.as_ref()
                                 .map(|id| id.0.clone())
                                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                             let xmpp_msg = XmppMessage {
                                 id: msg_id,
-                                from: from_jid,
+                                from: from_jid.clone(),
                                 to: state.own_jid.clone(),
                                 body: body_text.clone(),
                                 timestamp: {
@@ -612,6 +1164,41 @@ async fn xmpp_event_loop(
                                     format!("{seconds}")
                                 },
                                 message_type: "chat".to_string(),
+                                is_self: if msg.type_ == MessageType::Groupchat {
+                                    from_jid
+                                        .split('/')
+                                        .nth(1)
+                                        .map(|nickname| {
+                                            nickname
+                                                == state
+                                                    .own_jid
+                                                    .split('@')
+                                                    .next()
+                                                    .unwrap_or("")
+                                        })
+                                        .unwrap_or(false)
+                                } else {
+                                    false
+                                },
+                                group_room: if msg.type_ == MessageType::Groupchat {
+                                    Some(
+                                        from_jid
+                                            .split('/')
+                                            .next()
+                                            .unwrap_or(&from_jid)
+                                            .to_string(),
+                                    )
+                                } else {
+                                    None
+                                },
+                                author_nickname: if msg.type_ == MessageType::Groupchat {
+                                    from_jid
+                                        .split('/')
+                                        .nth(1)
+                                        .map(str::to_string)
+                                } else {
+                                    None
+                                },
                             };
                             if let Err(e) = app_handle.emit("xmpp_message_received", &xmpp_msg) {
                                 error!("Failed to emit xmpp_message_received: {}", e);
@@ -623,6 +1210,23 @@ async fn xmpp_event_loop(
                         if pres.type_ == PresenceType::Subscribe {
                             let from_jid = pres.from.map(|j| j.to_string()).unwrap_or_default();
                             if !from_jid.is_empty() {
+                                #[cfg(debug_assertions)]
+                                {
+                                    let bare = from_jid.split('/').next().unwrap_or(&from_jid);
+                                    let local = bare.split('@').next().unwrap_or("");
+                                    if ["testuser", "kampelo", "ivokds"].contains(&local) {
+                                        if let Ok(contact) = bare.parse::<jid::BareJid>() {
+                                            let mut subscribed = Presence::new(PresenceType::Subscribed);
+                                            subscribed.to = Some(jid::Jid::from(contact.clone()));
+                                            let _ = client.send_stanza(Stanza::Presence(subscribed)).await;
+
+                                            let mut subscribe = Presence::new(PresenceType::Subscribe);
+                                            subscribe.to = Some(jid::Jid::from(contact));
+                                            let _ = client.send_stanza(Stanza::Presence(subscribe)).await;
+                                        }
+                                        continue;
+                                    }
+                                }
                                 // Buffer for later retrieval (handles race with frontend mount)
                                 {
                                     let mut subs = state.pending_subscriptions.lock().await;
@@ -637,6 +1241,60 @@ async fn xmpp_event_loop(
                             }
                             continue;
                         }
+                        if let Some(full_jid) = pres.from.as_ref().map(|jid| jid.to_string()) {
+                            if full_jid.contains("@conference.") {
+                                let room_jid = full_jid
+                                    .split('/')
+                                    .next()
+                                    .unwrap_or(&full_jid)
+                                    .to_string();
+                                let nickname = full_jid
+                                    .split('/')
+                                    .nth(1)
+                                    .unwrap_or("")
+                                    .to_string();
+                                let available = !matches!(pres.type_, PresenceType::Unavailable);
+                                let availability = if available {
+                                    match &pres.show {
+                                        Some(Show::Away) => Availability::Away,
+                                        Some(Show::Dnd) => Availability::Busy,
+                                        _ => Availability::Online,
+                                    }
+                                } else {
+                                    Availability::Offline
+                                };
+                                let member_jid = pres.payloads.iter()
+                                    .find(|payload| payload.name() == "x" && payload.ns() == "http://jabber.org/protocol/muc#user")
+                                    .and_then(|payload| payload.get_child("item", "http://jabber.org/protocol/muc#user"))
+                                    .and_then(|item| item.attr("jid"))
+                                    .unwrap_or("")
+                                    .to_string();
+                                let affiliation = pres.payloads.iter()
+                                    .find(|payload| payload.name() == "x" && payload.ns() == "http://jabber.org/protocol/muc#user")
+                                    .and_then(|payload| payload.get_child("item", "http://jabber.org/protocol/muc#user"))
+                                    .and_then(|item| item.attr("affiliation"))
+                                    .unwrap_or("member")
+                                    .to_string();
+                                let role = pres.payloads.iter()
+                                    .find(|payload| payload.name() == "x" && payload.ns() == "http://jabber.org/protocol/muc#user")
+                                    .and_then(|payload| payload.get_child("item", "http://jabber.org/protocol/muc#user"))
+                                    .and_then(|item| item.attr("role"))
+                                    .unwrap_or("participant")
+                                    .to_string();
+                                let payload = serde_json::json!({
+                                    "room_jid": room_jid,
+                                    "nickname": nickname,
+                                    "jid": member_jid,
+                                    "availability": availability,
+                                    "available": available,
+                                    "affiliation": affiliation,
+                                    "role": role,
+                                });
+                                if let Err(e) = app_handle.emit("xmpp_group_member_update", &payload) {
+                                    error!("Failed to emit MUC member update: {}", e);
+                                }
+                            }
+                        }
                         // Phase D: handle contact presence updates
                         let availability = match &pres.type_ {
                             PresenceType::None => Some(match &pres.show {
@@ -650,15 +1308,22 @@ async fn xmpp_event_loop(
                         if let Some(avail) = availability {
                             let jid_full = pres.from.map(|j| j.to_string()).unwrap_or_default();
                             if !jid_full.is_empty() {
+                                if jid_full.contains("@conference.") {
+                                    continue;
+                                }
                                 // Strip resource to get bare JID for cache key
                                 let bare_jid = jid_full.split('/').next().unwrap_or(&jid_full).to_string();
                                 // Skip own presence echoes from the server
                                 let own_bare = state.own_jid.split('/').next().unwrap_or(&state.own_jid).to_string();
                                 if bare_jid != own_bare {
+                                    let status_text = pres
+                                        .statuses
+                                        .get(&Lang::new())
+                                        .map(|status| status.to_string());
                                     let xmpp_pres = XmppPresence {
                                         jid: bare_jid.clone(),
                                         availability: avail,
-                                        status: None,
+                                        status: status_text,
                                     };
                                     // Write to cache so MainPage can replay on mount
                                     state.presence_cache.lock().await.insert(bare_jid, xmpp_pres.clone());
@@ -783,6 +1448,123 @@ async fn xmpp_event_loop(
                             }
                         }
                     }
+                    Some(OutgoingCmd::SendNudge { to }) => {
+                        match to.parse::<jid::BareJid>() {
+                            Ok(to_jid) => {
+                                let mut msg = XmppMsg::chat(jid::Jid::from(to_jid));
+                                msg.payloads.push(
+                                    MinidomElement::builder("nudge", "urn:xmpp:nudge:0").build(),
+                                );
+                                if let Err(e) = client.send_stanza(Stanza::Message(msg)).await {
+                                    error!("Failed to send nudge stanza: {}", e);
+                                }
+                            }
+                            Err(e) => error!("Invalid nudge recipient '{}': {}", to, e),
+                        }
+                    }
+                    Some(OutgoingCmd::SendGroupMessage { room_jid, body }) => {
+                        match room_jid.parse::<jid::BareJid>() {
+                            Ok(room) => {
+                                let mut msg = XmppMsg::chat(jid::Jid::from(room));
+                                msg.type_ = MessageType::Groupchat;
+                                msg = msg.with_body(Default::default(), body);
+                                info!("Sending MUC message to {}", room_jid);
+                                if let Err(e) = client.send_stanza(Stanza::Message(msg)).await {
+                                    error!("Failed to send group message stanza: {}", e);
+                                }
+                            }
+                            Err(e) => error!("Invalid group room JID '{}': {}", room_jid, e),
+                        }
+                    }
+                    Some(OutgoingCmd::JoinGroup { room_jid, nickname }) => {
+                        let full_room = format!("{room_jid}/{nickname}");
+                        match jid::Jid::new(&full_room) {
+                            Ok(room) => {
+                                info!("Joining MUC room {} as {}", room_jid, nickname);
+                                let mut presence = Presence::available();
+                                presence.to = Some(room);
+                                let muc = MinidomElement::builder("x", "http://jabber.org/protocol/muc").build();
+                                presence.payloads.push(muc);
+                                if let Err(e) = client.send_stanza(Stanza::Presence(presence)).await {
+                                    error!("Failed to join MUC room '{}': {}", room_jid, e);
+                                }
+                            }
+                            Err(e) => error!("Invalid MUC room JID '{}': {}", room_jid, e),
+                        }
+                    }
+                    Some(OutgoingCmd::LeaveGroup { room_jid, nickname }) => {
+                        let full_room = format!("{room_jid}/{nickname}");
+                        match jid::Jid::new(&full_room) {
+                            Ok(room) => {
+                                let mut presence = Presence::unavailable();
+                                presence.to = Some(room);
+                                if let Err(e) = client.send_stanza(Stanza::Presence(presence)).await {
+                                    error!("Failed to leave MUC room '{}': {}", room_jid, e);
+                                }
+                            }
+                            Err(e) => error!("Invalid MUC room JID '{}': {}", room_jid, e),
+                        }
+                    }
+                    Some(OutgoingCmd::SendGroupInvite { room_jid, room_name, inviter, invitee }) => {
+                        match (room_jid.parse::<jid::BareJid>(), invitee.parse::<jid::BareJid>()) {
+                            (Ok(room), Ok(contact)) => {
+                                let x = MinidomElement::builder(
+                                    "x",
+                                    "http://jabber.org/protocol/muc#user",
+                                )
+                                .append(
+                                    MinidomElement::builder("invite", "http://jabber.org/protocol/muc#user")
+                                        .attr(rxml::NcName::try_from("from").unwrap(), inviter)
+                                        .attr(rxml::NcName::try_from("to").unwrap(), room.to_string())
+                                        .build(),
+                                )
+                                .build();
+                                let mut msg = XmppMsg::chat(jid::Jid::from(contact));
+                                msg.payloads.push(x);
+                                msg.subjects.insert(Lang::new(), room_name);
+                                if let Err(e) = client.send_stanza(Stanza::Message(msg)).await {
+                                    error!("Failed to send MUC invite to '{}': {}", invitee, e);
+                                }
+                            }
+                            _ => error!("Invalid MUC invite room='{}' invitee='{}'", room_jid, invitee),
+                        }
+                    }
+                    Some(OutgoingCmd::SetGroupSubject { room_jid, subject }) => {
+                        match room_jid.parse::<jid::BareJid>() {
+                            Ok(room) => {
+                                let mut msg = XmppMsg::groupchat(jid::Jid::from(room));
+                                msg.subjects.insert(Lang::new(), subject);
+                                if let Err(e) = client.send_stanza(Stanza::Message(msg)).await {
+                                    error!("Failed to set MUC room subject '{}': {}", room_jid, e);
+                                }
+                            }
+                            Err(e) => error!("Invalid MUC room JID '{}': {}", room_jid, e),
+                        }
+                    }
+                    Some(OutgoingCmd::RemoveGroupMember { room_jid, member_jid }) => {
+                        match (room_jid.parse::<jid::BareJid>(), member_jid.parse::<jid::BareJid>()) {
+                            (Ok(room), Ok(member)) => {
+                                let item = MinidomElement::builder("item", "http://jabber.org/protocol/muc#admin")
+                                    .attr(rxml::NcName::try_from("jid").unwrap(), member.to_string())
+                                    .attr(rxml::NcName::try_from("affiliation").unwrap(), "none")
+                                    .attr(rxml::NcName::try_from("role").unwrap(), "none")
+                                    .build();
+                                let query = MinidomElement::builder("query", "http://jabber.org/protocol/muc#admin")
+                                    .append(item)
+                                    .build();
+                                let iq = XmppIq::Set {
+                                    from: None,
+                                    to: Some(jid::Jid::from(room)),
+                                    id: format!("muc-admin-{}", uuid::Uuid::new_v4()),
+                                    payload: query,
+                                };
+                                if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
+                                    error!("Failed to remove MUC member '{}': {}", member_jid, e);
+                                }
+                            }
+                            _ => error!("Invalid MUC removal room='{}' member='{}'", room_jid, member_jid),
+                        }
+                    }
                     Some(OutgoingCmd::SetPresence { show, status_text }) => {
                         // Remember the current show value for BroadcastPresence
                         *state.current_show.lock().await = show.clone();
@@ -836,6 +1618,67 @@ async fn xmpp_event_loop(
                         );
                         if let Err(e) = client.send_stanza(Stanza::Iq(roster_iq)).await {
                             error!("Failed to send roster IQ: {}", e);
+                        }
+                    }
+                    Some(OutgoingCmd::FetchHistory) => {
+                        let mam_id = format!("mam-{}", uuid::Uuid::new_v4());
+                        let query_xml = format!(
+                            "<query xmlns=\"urn:xmpp:mam:2\" queryid=\"{mam_id}\">\
+                             <x xmlns=\"jabber:x:data\" type=\"submit\">\
+                             <field var=\"FORM_TYPE\" type=\"hidden\">\
+                             <value>urn:xmpp:mam:2</value>\
+                             </field>\
+                             </x>\
+                             <set xmlns=\"http://jabber.org/protocol/rsm\"><max>200</max></set>\
+                             </query>"
+                        );
+                        let query = match query_xml.parse::<MinidomElement>() {
+                            Ok(query) => query,
+                            Err(e) => {
+                                error!("Failed to build MAM history query: {e}");
+                                continue;
+                            }
+                        };
+                        let iq = XmppIq::Set {
+                            from: None,
+                            to: None,
+                            id: mam_id,
+                            payload: query,
+                        };
+                        if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
+                            error!("Failed to send MAM history IQ: {}", e);
+                        }
+                    }
+                    Some(OutgoingCmd::FetchGroupHistory { room_jid }) => {
+                        match room_jid.parse::<jid::BareJid>() {
+                            Ok(room) => {
+                                let mam_id = format!("muc-mam-{}", uuid::Uuid::new_v4());
+                                let query_xml = format!(
+                                    "<query xmlns=\"urn:xmpp:mam:2\" queryid=\"{mam_id}\">\
+                                     <x xmlns=\"jabber:x:data\" type=\"submit\">\
+                                     <field var=\"FORM_TYPE\" type=\"hidden\">\
+                                     <value>urn:xmpp:mam:2</value>\
+                                     </field>\
+                                     </x>\
+                                     <set xmlns=\"http://jabber.org/protocol/rsm\"><max>500</max></set>\
+                                     </query>"
+                                );
+                                match query_xml.parse::<MinidomElement>() {
+                                    Ok(query) => {
+                                        let iq = XmppIq::Set {
+                                            from: None,
+                                            to: Some(jid::Jid::from(room)),
+                                            id: mam_id,
+                                            payload: query,
+                                        };
+                                        if let Err(e) = client.send_stanza(Stanza::Iq(iq)).await {
+                                            error!("Failed to send MUC-MAM history IQ: {}", e);
+                                        }
+                                    }
+                                    Err(e) => error!("Failed to build MUC-MAM history query: {}", e),
+                                }
+                            }
+                            Err(e) => error!("Invalid MUC room JID '{}': {}", room_jid, e),
                         }
                     }
                     Some(OutgoingCmd::FetchVcard) => {

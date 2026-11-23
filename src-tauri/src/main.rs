@@ -4,6 +4,8 @@
 use std::{env, fmt::Display, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
+#[cfg(debug_assertions)]
+use tauri::Emitter;
 use tauri::{command, Manager, State};
 
 mod xmpp_manager;
@@ -86,6 +88,13 @@ struct SavedProfile {
     remember_me: bool,
     auto_sign_in: bool,
     last_availability: String,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Serialize, Deserialize, Clone)]
+struct DebugCliLogin {
+    username: String,
+    password: String,
 }
 
 fn read_profile_data(app_handle: &tauri::AppHandle) -> serde_json::Value {
@@ -189,10 +198,13 @@ fn main() {
             get_saved_jid,
             get_saved_profile,
             save_jid,
+            #[cfg(debug_assertions)]
+            get_debug_cli_login,
             // XMPP commands
             xmpp_connect,
             xmpp_disconnect,
             xmpp_send_message,
+            xmpp_send_nudge,
             xmpp_set_presence,
             xmpp_add_contact,
             xmpp_get_connection_status,
@@ -205,6 +217,16 @@ fn main() {
             xmpp_accept_subscription,
             xmpp_deny_subscription,
             xmpp_request_roster,
+            xmpp_fetch_history,
+            xmpp_fetch_group_history,
+            xmpp_create_group,
+            xmpp_invite_to_group,
+            xmpp_join_group,
+            xmpp_leave_group,
+            xmpp_send_group_message,
+            xmpp_set_group_subject,
+            xmpp_remove_group_member,
+            get_pending_group_invites,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -391,6 +413,37 @@ fn save_login_prefs(
     write_profile_data(&app_handle, &json)
 }
 
+#[cfg(debug_assertions)]
+#[command]
+fn get_debug_cli_login() -> Result<Option<DebugCliLogin>, String> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let mut username = None;
+    let mut password = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--username" | "-u" => {
+                if let Some(value) = args.get(index + 1) {
+                    username = Some(value.clone());
+                    index += 1;
+                }
+            }
+            "--password" | "-p" => {
+                if let Some(value) = args.get(index + 1) {
+                    password = Some(value.clone());
+                    index += 1;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    Ok(match (username, password) {
+        (Some(username), Some(password)) => Some(DebugCliLogin { username, password }),
+        _ => None,
+    })
+}
+
 #[command]
 fn save_jid(app_handle: tauri::AppHandle, jid: String) -> Result<(), String> {
     // Read-modify-write to preserve existing nickname and flavour_text
@@ -428,11 +481,18 @@ async fn xmpp_connect(
         }));
     }
     let mut xmpp_manager = xmpp_state.lock().await;
-    xmpp_manager.set_app_handle(app_handle);
+    xmpp_manager.set_app_handle(app_handle.clone());
 
     match xmpp_manager.connect(jid, password).await {
         Ok(_) => {
             log::info!("XMPP connection successful");
+            #[cfg(debug_assertions)]
+            {
+                xmpp_manager.seed_debug_test_presence().await;
+                for presence in xmpp_manager.get_presence_cache().await {
+                    let _ = app_handle.emit("xmpp_presence_update", &presence);
+                }
+            }
             Ok(serde_json::json!({
                 "success": true,
                 "message": "Connected successfully"
@@ -454,6 +514,33 @@ async fn xmpp_disconnect(xmpp_state: State<'_, XmppState>) -> Result<String, Str
     let mut xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.disconnect().await?;
     Ok("Disconnected successfully".to_string())
+}
+
+#[command]
+async fn xmpp_send_nudge(
+    xmpp_state: State<'_, XmppState>,
+    to_jid: String,
+) -> Result<serde_json::Value, String> {
+    if to_jid.contains("@conference.") {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Nudge is not supported for group chats"
+        }));
+    }
+    if to_jid.parse::<jid::BareJid>().is_err() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Invalid recipient JID"
+        }));
+    }
+    let xmpp_manager = xmpp_state.lock().await;
+    match xmpp_manager.send_nudge(to_jid).await {
+        Ok(_) => Ok(serde_json::json!({ "success": true })),
+        Err(e) => Ok(serde_json::json!({
+            "success": false,
+            "error": e
+        })),
+    }
 }
 
 #[command]
@@ -524,6 +611,144 @@ async fn xmpp_request_roster(xmpp_state: State<'_, XmppState>) -> Result<String,
     let xmpp_manager = xmpp_state.lock().await;
     xmpp_manager.request_roster().await?;
     Ok("Roster request sent".to_string())
+}
+
+#[command]
+async fn xmpp_fetch_history(xmpp_state: State<'_, XmppState>) -> Result<String, String> {
+    log::info!("xmpp_fetch_history command called");
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.fetch_history().await?;
+    Ok("MAM history request sent".to_string())
+}
+
+#[command]
+async fn xmpp_fetch_group_history(
+    xmpp_state: State<'_, XmppState>,
+    room_jid: String,
+) -> Result<String, String> {
+    log::info!("xmpp_fetch_group_history called for {}", room_jid);
+    if room_jid.parse::<jid::BareJid>().is_err() || !room_jid.contains("@conference.") {
+        return Err("Invalid MUC room JID".to_string());
+    }
+    let xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.fetch_group_history(room_jid).await?;
+    Ok("MUC-MAM history request sent".to_string())
+}
+
+#[command]
+async fn xmpp_create_group(
+    xmpp_state: State<'_, XmppState>,
+    room_name: String,
+    invitees: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    if room_name.trim().is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "Group name is required"
+        }));
+    }
+    let xmpp_manager = xmpp_state.lock().await;
+    match xmpp_manager.create_group(room_name, invitees).await {
+        Ok(room_jid) => Ok(serde_json::json!({
+            "success": true,
+            "room_jid": room_jid
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "success": false,
+            "error": e
+        })),
+    }
+}
+
+#[command]
+async fn xmpp_invite_to_group(
+    xmpp_state: State<'_, XmppState>,
+    room_jid: String,
+    room_name: String,
+    invitees: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let xmpp_manager = xmpp_state.lock().await;
+    match xmpp_manager
+        .invite_to_group(room_jid, room_name, invitees)
+        .await
+    {
+        Ok(_) => Ok(serde_json::json!({ "success": true })),
+        Err(e) => Ok(serde_json::json!({
+            "success": false,
+            "error": e
+        })),
+    }
+}
+
+#[command]
+async fn xmpp_join_group(
+    xmpp_state: State<'_, XmppState>,
+    room_jid: String,
+) -> Result<String, String> {
+    xmpp_state.lock().await.join_group(room_jid).await?;
+    Ok("Joined group".to_string())
+}
+
+#[command]
+async fn xmpp_leave_group(
+    xmpp_state: State<'_, XmppState>,
+    room_jid: String,
+) -> Result<String, String> {
+    xmpp_state.lock().await.leave_group(room_jid).await?;
+    Ok("Left group".to_string())
+}
+
+#[command]
+async fn xmpp_send_group_message(
+    xmpp_state: State<'_, XmppState>,
+    room_jid: String,
+    body: String,
+) -> Result<serde_json::Value, String> {
+    let xmpp_manager = xmpp_state.lock().await;
+    match xmpp_manager.send_group_message(room_jid, body).await {
+        Ok(_) => Ok(serde_json::json!({
+            "success": true
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "success": false,
+            "error": e
+        })),
+    }
+}
+
+#[command]
+async fn xmpp_set_group_subject(
+    xmpp_state: State<'_, XmppState>,
+    room_jid: String,
+    subject: String,
+) -> Result<String, String> {
+    xmpp_state
+        .lock()
+        .await
+        .set_group_subject(room_jid, subject)
+        .await?;
+    Ok("Group name updated".to_string())
+}
+
+#[command]
+async fn xmpp_remove_group_member(
+    xmpp_state: State<'_, XmppState>,
+    room_jid: String,
+    member_jid: String,
+) -> Result<String, String> {
+    xmpp_state
+        .lock()
+        .await
+        .remove_group_member(room_jid, member_jid)
+        .await?;
+    Ok("Member removed".to_string())
+}
+
+#[command]
+async fn get_pending_group_invites(
+    xmpp_state: State<'_, XmppState>,
+) -> Result<Vec<xmpp_manager::XmppGroupInvite>, String> {
+    Ok(xmpp_state.lock().await.drain_pending_group_invites().await)
 }
 
 #[command]
