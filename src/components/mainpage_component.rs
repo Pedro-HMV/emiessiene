@@ -305,8 +305,18 @@ pub fn MainPage() -> impl IntoView {
 
             let disconnected_callback = wasm_bindgen::closure::Closure::wrap(Box::new({
                 let set_connection_status = set_connection_status;
+                let set_friends = set_friends;
                 move |_event: JsValue| {
                     set_connection_status.set("Disconnected".to_string());
+                    set_friends.update(|(online, offline)| {
+                        let mut all: Vec<Friend> =
+                            online.drain(..).chain(offline.drain(..)).collect();
+                        for friend in &mut all {
+                            friend.availability = Availability::Offline;
+                        }
+                        offline.extend(all);
+                        offline.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                    });
                 }
             })
                 as Box<dyn Fn(JsValue)>);
@@ -321,6 +331,7 @@ pub fn MainPage() -> impl IntoView {
                         if let Some(items) = payload.as_array() {
                             let mut online: Vec<Friend> = Vec::new();
                             let mut offline: Vec<Friend> = Vec::new();
+                            let mut roster_jids: Vec<String> = Vec::new();
                             for item in items {
                                 let jid = item["jid"].as_str().unwrap_or("").to_string();
                                 let name = item["name"]
@@ -332,7 +343,8 @@ pub fn MainPage() -> impl IntoView {
                                     });
                                 let sub = item["subscription"].as_str().unwrap_or("");
                                 // Only include mutual contacts
-                                if sub == "both" || sub == "from" || sub == "to" {
+                                if sub == "both" {
+                                    roster_jids.push(jid.clone());
                                     offline.push(Friend {
                                         name,
                                         email: jid,
@@ -347,6 +359,17 @@ pub fn MainPage() -> impl IntoView {
                             offline
                                 .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                             set_friends.set((online, offline));
+                            for jid in roster_jids {
+                                let jid_clone = jid.clone();
+                                spawn_local(async move {
+                                    let _ = invoke(
+                                        "xmpp_fetch_contact_vcard",
+                                        to_value(&FetchContactVcardArgs { jid: jid_clone })
+                                            .unwrap(),
+                                    )
+                                    .await;
+                                });
+                            }
                             // Immediately replay presence cache so contacts who are already
                             // online appear correctly. The roster response always resets
                             // everyone to Offline — this corrects it in the same microtask.
@@ -611,12 +634,20 @@ pub fn MainPage() -> impl IntoView {
                         if jid.is_empty() {
                             return;
                         }
+                        if sub == "remove" || sub == "none" {
+                            set_friends.update(|(online, offline)| {
+                                online.retain(|friend| friend.email != jid);
+                                offline.retain(|friend| friend.email != jid);
+                            });
+                            set_pending_requests.update(|reqs| reqs.retain(|j| j != &jid));
+                            return;
+                        }
                         let name = if name_raw.is_empty() {
                             jid.split('@').next().unwrap_or(&jid).to_string()
                         } else {
                             name_raw
                         };
-                        if sub == "both" || sub == "from" || sub == "to" {
+                        if sub == "both" {
                             set_friends.update(|(online, offline)| {
                                 let exists = online.iter().any(|f| f.email == jid)
                                     || offline.iter().any(|f| f.email == jid);
@@ -631,6 +662,15 @@ pub fn MainPage() -> impl IntoView {
                                         a.name.to_lowercase().cmp(&b.name.to_lowercase())
                                     });
                                 }
+                            });
+                            let jid_for_vcard = jid.clone();
+                            spawn_local(async move {
+                                let _ = invoke(
+                                    "xmpp_fetch_contact_vcard",
+                                    to_value(&FetchContactVcardArgs { jid: jid_for_vcard })
+                                        .unwrap(),
+                                )
+                                .await;
                             });
                             // Remove from pending — this JID is now a confirmed contact
                             set_pending_requests.update(|reqs| reqs.retain(|j| j != &jid));
@@ -856,7 +896,7 @@ pub fn MainPage() -> impl IntoView {
     view! {
         <div id="main-container" class="flex-col">
             <div class="chat-tabs">
-                <img src="/assets/nto-connected-brand-assets/nto-app-icon-64.png" alt="" class="chat-tabs-brand" />
+                <img src="/assets/NTO_identidade_visual/icon/NTO_icon_64.png" alt="" class="chat-tabs-brand" />
                 {chat_tabs}
             </div>
             <header>

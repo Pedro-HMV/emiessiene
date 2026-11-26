@@ -404,7 +404,7 @@ pub fn Chat() -> impl IntoView {
 
                     <div class="chat-header-center">
                         <span class="chat_receiver">
-                            <img src="/assets/nto-connected-brand-assets/nto-app-icon-32.png" alt="" class="chat-contact-icon" />
+                            <img src="/assets/NTO_identidade_visual/icon/NTO_icon_32.png" alt="" class="chat-contact-icon" />
                             {move || format!(" {}", friend_info_name())}
                         </span>
                         <span class="chat_receiver-status-message">
@@ -527,9 +527,6 @@ pub fn Chat() -> impl IntoView {
                                                 }
                                                 resolved.unwrap_or_else(|| {
                                                     match nickname.as_str() {
-                                                        "testuser" => "Pedro".to_string(),
-                                                        "kampelo" => "Kampelo".to_string(),
-                                                        "ivokds" => "Ivokds".to_string(),
                                                         "" => friend_name.clone(),
                                                         other => other.to_string(),
                                                     }

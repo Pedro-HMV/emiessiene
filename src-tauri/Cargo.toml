@@ -30,6 +30,7 @@ native-tls = "0.2"
 tokio-native-tls = "0.3"
 sasl = "0.5"
 tauri-plugin-shell = "2.6.0"
+keyring = "3"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

@@ -84,16 +84,21 @@ pub fn RegisterPage() -> impl IntoView {
 
     view! {
         <div id="register_container" class="flex-col">
-            <img src="/assets/nto-connected-brand-assets/nto-logo.png" alt="NTO" class="register-brand-logo" />
+            <img src="/assets/NTO_identidade_visual/logo/NTO_logo_horizontal_390x150.png" alt="NTO - Nostalgic Talk Online" class="register-brand-logo" />
             <div id="register_title">"Create NTO Account"</div>
             <div id="register_subtitle">"Join the nostalgic messaging experience"</div>
 
-            <form id="register_form" class="flex-col">
+            <form id="register_form" class="flex-col" autocomplete="off" data-form-type="other">
                 <div class="form-group">
                     <label for="username">"Username"</label>
                     <input
                         type="text"
                         id="username"
+                        name="nto_register_username"
+                        autocomplete="off"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-form-type="other"
                         placeholder="Username or full JID"
                         value=move || username.get()
                         on:input=move |ev| set_username.set(event_target_value(&ev))
@@ -105,6 +110,11 @@ pub fn RegisterPage() -> impl IntoView {
                     <input
                         type="text"
                         id="domain"
+                        name="nto_register_domain"
+                        autocomplete="off"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-form-type="other"
                         placeholder="localhost or server.example.com"
                         value=move || domain.get()
                         on:input=move |ev| set_domain.set(event_target_value(&ev))
@@ -117,6 +127,11 @@ pub fn RegisterPage() -> impl IntoView {
                     <input
                         type="password"
                         id="password"
+                        name="nto_register_password"
+                        autocomplete="off"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-form-type="other"
                         placeholder="Choose a secure password"
                         value=move || password.get()
                         on:input=move |ev| set_password.set(event_target_value(&ev))

@@ -1330,16 +1330,16 @@ button {
    ============================================================ */
 
 :root {
-  --msn-sky-50: #edf6fb;
-  --msn-sky-100: #ddebf4;
-  --msn-sky-200: #bfd7e7;
-  --msn-sky-300: #9fc2d8;
-  --msn-sky-500: #568dac;
-  --msn-sky-700: #315e78;
-  --msn-blue: #1676bd;
-  --msn-blue-dark: #0c5f9d;
-  --msn-ink: #22333d;
-  --msn-muted: #667985;
+  --msn-sky-50: #f3f9fc;
+  --msn-sky-100: #e5f0f7;
+  --msn-sky-200: #c9dde8;
+  --msn-sky-300: #b5cad7;
+  --msn-sky-500: #267fcb;
+  --msn-sky-700: #164563;
+  --msn-blue: #267fcb;
+  --msn-blue-dark: #164563;
+  --msn-ink: #164563;
+  --msn-muted: #4e7e97;
   --msn-line: #b5cad7;
   --msn-line-soft: #d6e2e9;
   --msn-panel: #fafdfe;
@@ -2813,4 +2813,278 @@ button.chat_nudge-btn:hover {
 .chat_nudge-btn--disabled {
   opacity: 0.35;
   pointer-events: none;
+}
+
+/* ============================================================
+   NTO brand refresh
+   Coherent identity layer applied across auth, roster, and chat.
+   ============================================================ */
+
+html,
+body {
+  background:
+    radial-gradient(circle at 72% 8%, rgba(128, 221, 224, 0.18), transparent 18rem),
+    radial-gradient(circle at 18% 92%, rgba(95, 177, 240, 0.12), transparent 22rem),
+    linear-gradient(145deg, #f3f9fc 0%, #e5f0f7 52%, #d9eaf4 100%);
+}
+
+#main-container {
+  background: rgba(243, 249, 252, 0.78);
+}
+
+.chat-tabs {
+  background: rgba(229, 240, 247, 0.94);
+  border-bottom: 1px solid var(--msn-line);
+  backdrop-filter: blur(12px);
+}
+
+.chat-tabs-brand {
+  filter: drop-shadow(0 2px 4px rgba(22, 69, 99, 0.14));
+}
+
+#header_container {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.08) 38%, transparent),
+    linear-gradient(160deg, #eaf4f8 0%, #dcecf4 58%, #cde4ef 100%);
+  border-bottom: 1px solid #a9c3d1;
+  box-shadow: 0 5px 18px rgba(22, 69, 99, 0.06);
+}
+
+#avatar_img,
+#login_avatar_img,
+.avatar {
+  background:
+    radial-gradient(circle at 32% 22%, rgba(128, 221, 224, 0.34), transparent 26%),
+    linear-gradient(145deg, #267fcb 0%, #4e7e97 58%, #164563 100%) !important;
+  border-color: rgba(255, 255, 255, 0.88) !important;
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.62),
+    inset 0 -3px 8px rgba(22, 69, 99, 0.16),
+    0 5px 16px rgba(22, 69, 99, 0.14) !important;
+  outline-color: rgba(38, 127, 203, 0.28) !important;
+}
+
+#find-friends,
+#friends-container,
+.chat_receiver-bar,
+.chat_icon-bar,
+.chat_message-form,
+.chat_message-list,
+.user-block,
+#register_container {
+  border-color: var(--msn-line);
+  box-shadow: 0 8px 24px rgba(22, 69, 99, 0.08);
+}
+
+.group-header {
+  background: linear-gradient(180deg, #eef6f9 0%, #ddeaf2 100%);
+  color: #164563;
+  border-bottom-color: #a9c3d1;
+}
+
+#online-list li:hover,
+#offline-list li:hover {
+  background: #dff2f4;
+  box-shadow: inset 3px 0 0 #32b8c4;
+}
+
+#login_container {
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.92), transparent 13rem),
+    radial-gradient(circle at 85% 12%, rgba(50, 184, 196, 0.12), transparent 20rem),
+    linear-gradient(145deg, #f3f9fc 0%, #e5f0f7 60%, #d8eaf3 100%);
+}
+
+#login_title {
+  width: min(390px, calc(100vw - 48px));
+  margin: 0 0 18px;
+  filter: drop-shadow(0 5px 14px rgba(22, 69, 99, 0.08));
+}
+
+.login-brand-logo {
+  width: 100%;
+  max-height: 150px;
+  display: block;
+  object-fit: contain;
+}
+
+#login_avatar {
+  position: relative;
+  margin-bottom: 18px;
+}
+
+#login_avatar::before,
+#login_avatar::after {
+  content: "";
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(50, 184, 196, 0.24);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+#login_avatar::before {
+  left: -54px;
+  top: 24px;
+}
+
+#login_avatar::after {
+  right: -54px;
+  bottom: 18px;
+}
+
+#login_avatar_img {
+  width: 138px !important;
+  height: 138px !important;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 28%, rgba(128, 221, 224, 0.42), transparent 28%),
+    rgba(243, 249, 252, 0.96) !important;
+  border: 1px solid #b5cad7 !important;
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.9),
+    0 10px 28px rgba(22, 69, 99, 0.12) !important;
+  outline: 1px solid rgba(38, 127, 203, 0.12) !important;
+  outline-offset: 6px;
+}
+
+.login-app-logo {
+  width: 72%;
+  height: 72%;
+  margin: 14%;
+  filter: drop-shadow(0 5px 8px rgba(22, 69, 99, 0.16));
+}
+
+#login_form {
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(181, 202, 215, 0.72);
+  border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(22, 69, 99, 0.12);
+  backdrop-filter: blur(14px);
+}
+
+#login_form input[type="text"],
+#login_form input[type="password"] {
+  height: 42px;
+  border: 1px solid #b5cad7 !important;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+#login_form input:focus,
+#register_form input:focus {
+  border-color: #267fcb !important;
+  box-shadow: 0 0 0 3px rgba(38, 127, 203, 0.12);
+}
+
+#login_submit,
+.register-button {
+  min-height: 42px;
+  border: 0 !important;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #267fcb 0%, #164563 100%) !important;
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(22, 69, 99, 0.18);
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+#login_submit:hover,
+.register-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #32b8c4 0%, #267fcb 100%) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(22, 69, 99, 0.22);
+}
+
+.register-link a,
+.login-link a {
+  color: #267fcb;
+}
+
+#register_container {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(181, 202, 215, 0.82);
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
+}
+
+.register-brand-logo {
+  width: 230px;
+  max-width: 72%;
+  margin: 0 auto 18px;
+  display: block;
+  object-fit: contain;
+}
+
+.chat_receiver-bar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), #edf5f8);
+  border-radius: 8px;
+}
+
+.chat_icon-bar {
+  background: linear-gradient(180deg, #f8fbfd, #e5f0f7);
+  border-radius: 8px;
+}
+
+.chat_message-list,
+.chat_message-form {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.chat_message-form textarea {
+  border: 1px solid #b5cad7;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.chat_message-form textarea:focus {
+  border-color: #267fcb;
+  box-shadow: 0 0 0 3px rgba(38, 127, 203, 0.10);
+}
+
+.chat_message-form button[type="submit"] {
+  border: 0;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #267fcb, #164563);
+  color: #fff;
+}
+
+.chat_config-btn,
+.chat_invite-btn,
+.chat_files-btn,
+.chat_webcam-btn,
+.chat_voice-btn,
+.chat_block-btn {
+  border-radius: 7px;
+  border-color: #b5cad7;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.chat_config-btn:hover,
+.chat_invite-btn:hover,
+.chat_files-btn:hover,
+.chat_webcam-btn:hover,
+.chat_voice-btn:hover,
+.chat_block-btn:hover {
+  border-color: #32b8c4;
+  background: #e7f7f7;
+  transform: translateY(-1px);
+}
+
+@media (max-width: 600px) {
+  #login_title {
+    width: min(310px, calc(100vw - 40px));
+  }
+
+  #login_avatar::before,
+  #login_avatar::after {
+    display: none;
+  }
+
+  #login_avatar_img {
+    width: 118px !important;
+    height: 118px !important;
+  }
 }

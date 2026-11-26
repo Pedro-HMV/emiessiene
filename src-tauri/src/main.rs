@@ -3,9 +3,9 @@
 
 use std::{env, fmt::Display, sync::Mutex};
 
+use keyring::Entry;
 use serde::{Deserialize, Serialize};
 #[cfg(debug_assertions)]
-use tauri::Emitter;
 use tauri::{command, Manager, State};
 
 mod xmpp_manager;
@@ -45,7 +45,6 @@ impl Friend {
             availability: availability.unwrap_or(Availability::Online),
         }
     }
-
     fn update(
         &mut self,
         name: Option<String>,
@@ -127,6 +126,13 @@ fn write_profile_data(
     std::fs::write(&file_path, contents).map_err(|e| e.to_string())
 }
 
+const NTO_CREDENTIAL_SERVICE: &str = "com.nto.desktop";
+
+fn credential_entry(jid: &str) -> Result<Entry, String> {
+    Entry::new(NTO_CREDENTIAL_SERVICE, jid)
+        .map_err(|e| format!("Failed to access secure credential store: {e}"))
+}
+
 impl AppState {
     fn friends_by_availability(&self) -> (Vec<Friend>, Vec<Friend>) {
         log::info!("Sorting friends by availability");
@@ -198,6 +204,8 @@ fn main() {
             get_saved_jid,
             get_saved_profile,
             save_jid,
+            clear_saved_login,
+            get_auto_login_status,
             #[cfg(debug_assertions)]
             get_debug_cli_login,
             // XMPP commands
@@ -210,6 +218,7 @@ fn main() {
             xmpp_get_connection_status,
             xmpp_register,
             save_login_prefs,
+            xmpp_auto_login,
             xmpp_fetch_vcard,
             xmpp_fetch_contact_vcard,
             xmpp_get_presence_cache,
@@ -385,7 +394,27 @@ fn get_saved_jid(app_handle: tauri::AppHandle) -> Result<String, String> {
 
 #[command]
 fn get_saved_profile(app_handle: tauri::AppHandle) -> Result<SavedProfile, String> {
-    let json = read_profile_data(&app_handle);
+    let mut json = read_profile_data(&app_handle);
+    let jid = json["jid"].as_str().unwrap_or("").trim().to_string();
+    let auto_sign_in = json["auto_sign_in"].as_bool().unwrap_or(false);
+    if auto_sign_in {
+        let credential_exists = if jid.is_empty() {
+            false
+        } else {
+            credential_entry(&jid)
+                .and_then(|entry| {
+                    entry
+                        .get_password()
+                        .map(|password| !password.is_empty())
+                        .map_err(|e| e.to_string())
+                })
+                .unwrap_or(false)
+        };
+        if !credential_exists {
+            json["auto_sign_in"] = serde_json::Value::Bool(false);
+            let _ = write_profile_data(&app_handle, &json);
+        }
+    }
     Ok(SavedProfile {
         jid: json["jid"].as_str().unwrap_or("").to_string(),
         remember_me: json["remember_me"].as_bool().unwrap_or(false),
@@ -404,13 +433,92 @@ fn save_login_prefs(
     remember_me: bool,
     auto_sign_in: bool,
     availability: String,
+    password: Option<String>,
 ) -> Result<(), String> {
     let mut json = read_profile_data(&app_handle);
-    json["jid"] = serde_json::Value::String(if remember_me { jid } else { String::new() });
-    json["remember_me"] = serde_json::Value::Bool(remember_me);
-    json["auto_sign_in"] = serde_json::Value::Bool(auto_sign_in);
+    let old_jid = json["jid"].as_str().unwrap_or("").to_string();
+    let effective_remember = remember_me || auto_sign_in;
+    let effective_auto = effective_remember && auto_sign_in;
+    let saved_jid = if effective_remember {
+        jid.clone()
+    } else {
+        String::new()
+    };
+
+    if effective_auto {
+        let password = password
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Password is required to enable automatic sign-in".to_string())?;
+        let entry = credential_entry(&jid)?;
+        entry
+            .set_password(&password)
+            .map_err(|e| format!("Failed to save password securely: {e}"))?;
+        match entry.get_password() {
+            Ok(saved_password) if saved_password == password => {}
+            Ok(_) => {
+                return Err("Secure credential store verification failed".to_string());
+            }
+            Err(error) => {
+                return Err(format!("Saved password could not be verified: {error}"));
+            }
+        }
+    } else if !old_jid.is_empty() {
+        let _ = credential_entry(&old_jid).and_then(|entry| {
+            entry
+                .delete_credential()
+                .map_err(|e| format!("Failed to clear saved credential: {e}"))
+        });
+    }
+    if !jid.is_empty() && jid != old_jid && !effective_auto {
+        let _ = credential_entry(&jid).and_then(|entry| {
+            entry
+                .delete_credential()
+                .map_err(|e| format!("Failed to clear saved credential: {e}"))
+        });
+    }
+
+    json["jid"] = serde_json::Value::String(saved_jid);
+    json["remember_me"] = serde_json::Value::Bool(effective_remember);
+    json["auto_sign_in"] = serde_json::Value::Bool(effective_auto);
     json["last_availability"] = serde_json::Value::String(availability);
     write_profile_data(&app_handle, &json)
+}
+
+#[command]
+fn clear_saved_login(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let mut json = read_profile_data(&app_handle);
+    let jid = json["jid"].as_str().unwrap_or("").to_string();
+    if !jid.is_empty() {
+        if let Ok(entry) = credential_entry(&jid) {
+            let _ = entry.delete_credential();
+        }
+    }
+    json["auto_sign_in"] = serde_json::Value::Bool(false);
+    write_profile_data(&app_handle, &json)
+}
+
+#[command]
+fn get_auto_login_status(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let profile = read_profile_data(&app_handle);
+    let jid = profile["jid"].as_str().unwrap_or("").trim().to_string();
+    let enabled = profile["auto_sign_in"].as_bool().unwrap_or(false);
+    let credential_available = if enabled && !jid.is_empty() {
+        credential_entry(&jid)
+            .and_then(|entry| {
+                entry
+                    .get_password()
+                    .map(|password| !password.is_empty())
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    Ok(serde_json::json!({
+        "enabled": enabled,
+        "jid": jid,
+        "credential_available": credential_available
+    }))
 }
 
 #[cfg(debug_assertions)]
@@ -486,13 +594,6 @@ async fn xmpp_connect(
     match xmpp_manager.connect(jid, password).await {
         Ok(_) => {
             log::info!("XMPP connection successful");
-            #[cfg(debug_assertions)]
-            {
-                xmpp_manager.seed_debug_test_presence().await;
-                for presence in xmpp_manager.get_presence_cache().await {
-                    let _ = app_handle.emit("xmpp_presence_update", &presence);
-                }
-            }
             Ok(serde_json::json!({
                 "success": true,
                 "message": "Connected successfully"
@@ -505,6 +606,80 @@ async fn xmpp_connect(
                 "error": e
             }))
         }
+    }
+}
+
+#[command]
+async fn xmpp_auto_login(
+    app_handle: tauri::AppHandle,
+    xmpp_state: State<'_, XmppState>,
+) -> Result<serde_json::Value, String> {
+    let mut profile = read_profile_data(&app_handle);
+    if !profile["auto_sign_in"].as_bool().unwrap_or(false) {
+        log::info!("Automatic sign-in is disabled in saved profile");
+        return Ok(serde_json::json!({
+            "success": false,
+            "reason": "disabled"
+        }));
+    }
+    let jid = profile["jid"].as_str().unwrap_or("").trim().to_string();
+    if jid.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "reason": "missing_jid"
+        }));
+    }
+    let password_result = credential_entry(&jid).and_then(|entry| {
+        entry
+            .get_password()
+            .map_err(|e| format!("Saved credential is unavailable: {e}"))
+    });
+    let password = match password_result {
+        Ok(password) => password,
+        Err(error) => {
+            profile["auto_sign_in"] = serde_json::Value::Bool(false);
+            let _ = write_profile_data(&app_handle, &profile);
+            log::warn!(
+                "Cleared automatic sign-in because no credential was found for {}",
+                jid
+            );
+            return Ok(serde_json::json!({
+                "success": false,
+                "reason": "missing_credential",
+                "error": error
+            }));
+        }
+    };
+
+    let availability = match profile["last_availability"].as_str().unwrap_or("Online") {
+        "Away" => Availability::Away,
+        "Busy" => Availability::Busy,
+        "Offline" => Availability::Offline,
+        _ => Availability::Online,
+    };
+
+    let mut xmpp_manager = xmpp_state.lock().await;
+    xmpp_manager.set_app_handle(app_handle);
+    match xmpp_manager.connect(jid.clone(), password).await {
+        Ok(_) => {
+            if matches!(availability, Availability::Offline) {
+                if let Err(e) = xmpp_manager.set_presence(Availability::Offline, None).await {
+                    log::warn!("Failed to set XMPP offline availability: {}", e);
+                }
+            } else if let Err(e) = xmpp_manager.set_presence(availability.clone(), None).await {
+                log::warn!("Failed to restore XMPP availability: {}", e);
+            }
+            Ok(serde_json::json!({
+                "success": true,
+                "jid": jid,
+                "availability": availability
+            }))
+        }
+        Err(error) => Ok(serde_json::json!({
+            "success": false,
+            "reason": "connection_failed",
+            "error": error
+        })),
     }
 }
 
@@ -987,5 +1162,26 @@ async fn xmpp_register(jid: String, password: String) -> Result<serde_json::Valu
             "success": false,
             "error": "Unexpected server response during registration"
         }))
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn windows_credential_store_round_trip() {
+        let entry = Entry::new("com.nto.desktop.test", "credential-test")
+            .expect("credential entry should be created");
+        entry
+            .set_password("test-password")
+            .expect("credential should be writable");
+        match entry.get_password() {
+            Ok(password) => assert_eq!(password, "test-password"),
+            Err(error) => panic!("credential should be readable: {error}"),
+        }
+        entry
+            .delete_credential()
+            .expect("credential should be deletable");
     }
 }

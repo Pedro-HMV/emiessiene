@@ -38,6 +38,124 @@ pub struct XmppPresence {
     pub status: Option<String>,
 }
 
+type PresenceCache = HashMap<String, HashMap<String, XmppPresence>>;
+
+fn update_presence_resource(
+    cache: &mut PresenceCache,
+    full_jid: &str,
+    availability: Availability,
+    status: Option<String>,
+) -> XmppPresence {
+    let bare_jid = full_jid.split('/').next().unwrap_or(full_jid).to_string();
+    let resource = full_jid
+        .split('/')
+        .nth(1)
+        .filter(|resource| !resource.is_empty())
+        .unwrap_or("bare")
+        .to_string();
+
+    let resources = cache.entry(bare_jid.clone()).or_default();
+    if matches!(availability, Availability::Offline) {
+        resources.remove(&resource);
+    } else {
+        resources.insert(
+            resource,
+            XmppPresence {
+                jid: bare_jid.clone(),
+                availability: availability.clone(),
+                status: status.clone(),
+            },
+        );
+    }
+
+    let aggregate = aggregate_presence(&bare_jid, resources);
+    if matches!(aggregate.availability, Availability::Offline) {
+        cache.remove(&bare_jid);
+    }
+    aggregate
+}
+
+fn aggregate_presence(bare_jid: &str, resources: &HashMap<String, XmppPresence>) -> XmppPresence {
+    let mut selected: Option<&XmppPresence> = None;
+    for presence in resources.values() {
+        let replace = match selected {
+            None => true,
+            Some(current) => {
+                presence_priority(&presence.availability) > presence_priority(&current.availability)
+            }
+        };
+        if replace {
+            selected = Some(presence);
+        }
+    }
+
+    selected.cloned().unwrap_or_else(|| XmppPresence {
+        jid: bare_jid.to_string(),
+        availability: Availability::Offline,
+        status: None,
+    })
+}
+
+fn presence_priority(availability: &Availability) -> u8 {
+    match availability {
+        Availability::Busy => 3,
+        Availability::Away => 2,
+        Availability::Online => 1,
+        Availability::Offline => 0,
+    }
+}
+
+fn bare_xmpp_jid(full_jid: &str) -> String {
+    full_jid.split('/').next().unwrap_or(full_jid).to_string()
+}
+
+fn live_individual_is_self(from_full: &str, own_full: &str) -> bool {
+    bare_xmpp_jid(from_full) == bare_xmpp_jid(own_full)
+}
+
+fn muc_room_jid(from_full: &str) -> String {
+    bare_xmpp_jid(from_full)
+}
+
+fn muc_room_from_jids(from_full: &str, to_full: &str) -> Option<String> {
+    let from_bare = bare_xmpp_jid(from_full);
+    let to_bare = bare_xmpp_jid(to_full);
+    if from_bare.contains("@conference.") {
+        Some(from_bare)
+    } else if to_bare.contains("@conference.") {
+        Some(to_bare)
+    } else {
+        None
+    }
+}
+
+fn mam_peer_jid(
+    from_full: &str,
+    to_full: &str,
+    own_full: &str,
+    is_groupchat: bool,
+) -> (String, bool) {
+    let from_bare = bare_xmpp_jid(from_full);
+    let to_bare = bare_xmpp_jid(to_full);
+    if is_groupchat {
+        let peer = muc_room_from_jids(from_full, to_full).unwrap_or_else(|| from_bare.clone());
+        let own_nickname = own_full
+            .split('/')
+            .next()
+            .unwrap_or(own_full)
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let archived_nickname = from_full.split('/').nth(1).unwrap_or("").to_string();
+        (peer, archived_nickname == own_nickname)
+    } else {
+        let is_self = live_individual_is_self(from_full, own_full);
+        let peer = if is_self { to_bare } else { from_bare };
+        (peer, is_self)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct XmppGroupInvite {
     pub room_jid: String,
@@ -89,6 +207,7 @@ enum OutgoingCmd {
     SetPresence {
         show: Option<String>,
         status_text: Option<String>,
+        unavailable: bool,
     },
     BroadcastPresence,
     SetVcard {
@@ -122,7 +241,7 @@ struct XmppEventLoopState {
     own_jid: String,
     pending_subscriptions: Arc<Mutex<Vec<String>>>,
     pending_group_invites: Arc<Mutex<Vec<XmppGroupInvite>>>,
-    presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
+    presence_cache: Arc<Mutex<PresenceCache>>,
     current_show: Arc<Mutex<Option<String>>>,
 }
 
@@ -212,13 +331,16 @@ pub(crate) fn xmpp_port() -> u16 {
 }
 
 pub(crate) fn xmpp_allow_invalid_certs() -> bool {
-    cfg!(debug_assertions)
-        && matches!(
-            std::env::var("NTO_XMPP_ALLOW_INVALID_CERTS")
-                .ok()
-                .as_deref(),
-            Some("1" | "true" | "TRUE" | "yes")
-        )
+    if !cfg!(debug_assertions) {
+        return false;
+    }
+
+    !matches!(
+        std::env::var("NTO_XMPP_ALLOW_INVALID_CERTS")
+            .ok()
+            .as_deref(),
+        Some("0" | "false" | "FALSE" | "no")
+    )
 }
 
 pub struct XmppManager {
@@ -230,7 +352,7 @@ pub struct XmppManager {
     pending_group_invites: Arc<Mutex<Vec<XmppGroupInvite>>>,
     /// Cache of last-known presence per bare JID. Populated by the event loop,
     /// read by `xmpp_get_presence_cache` so MainPage can replay on mount.
-    presence_cache: Arc<Mutex<HashMap<String, XmppPresence>>>,
+    presence_cache: Arc<Mutex<PresenceCache>>,
     /// Last `show` value sent (None = available/online). Used by BroadcastPresence
     /// to re-send the correct show value after a vCard change.
     current_show: Arc<Mutex<Option<String>>>,
@@ -261,7 +383,6 @@ impl XmppManager {
 
     pub async fn connect(&mut self, jid_str: String, password: String) -> Result<(), String> {
         info!("Attempting XMPP connection for JID: {}", jid_str);
-        self.presence_cache.lock().await.clear();
         self.presence_cache.lock().await.clear();
 
         // Disconnect any existing connection first
@@ -629,6 +750,7 @@ impl XmppManager {
             .send(OutgoingCmd::SetPresence {
                 show,
                 status_text: status,
+                unavailable: matches!(availability, Availability::Offline),
             })
             .await
             .map_err(|e| format!("Failed to queue presence: {}", e))
@@ -725,33 +847,14 @@ impl XmppManager {
     }
 
     pub async fn get_presence_cache(&self) -> Vec<XmppPresence> {
-        self.presence_cache.lock().await.values().cloned().collect()
-    }
-
-    #[cfg(debug_assertions)]
-    pub async fn seed_debug_test_presence(&self) {
-        let own = self
-            .connection_status
-            .lock()
-            .await
-            .jid
-            .clone()
-            .unwrap_or_default();
-        let own_bare = own.split('/').next().unwrap_or("").to_string();
-        let mut cache = self.presence_cache.lock().await;
-        for username in ["testuser", "kampelo", "ivokds"] {
-            let jid = format!("{username}@localhost");
-            if jid != own_bare {
-                cache.insert(
-                    jid.clone(),
-                    XmppPresence {
-                        jid,
-                        availability: Availability::Online,
-                        status: Some("Online".to_string()),
-                    },
-                );
-            }
-        }
+        let cache = self.presence_cache.lock().await;
+        cache
+            .iter()
+            .filter_map(|(bare_jid, resources)| {
+                let aggregate = aggregate_presence(bare_jid, resources);
+                (!matches!(aggregate.availability, Availability::Offline)).then_some(aggregate)
+            })
+            .collect()
     }
 
     pub async fn broadcast_presence(&self) -> Result<(), String> {
@@ -1021,43 +1124,13 @@ async fn xmpp_event_loop(
                                 if let Some(body) = body {
                                     let from_full = archived.attr("from").unwrap_or("").to_string();
                                     let to_full = archived.attr("to").unwrap_or("").to_string();
-                                    let own_bare = state
-                                        .own_jid
-                                        .split('/')
-                                        .next()
-                                        .unwrap_or(&state.own_jid)
-                                        .to_string();
-                                    let from_bare = from_full
-                                        .split('/')
-                                        .next()
-                                        .unwrap_or(&from_full)
-                                        .to_string();
-                                    let to_bare = to_full
-                                        .split('/')
-                                        .next()
-                                        .unwrap_or(&to_full)
-                                        .to_string();
                                     let is_groupchat = archived.attr("type") == Some("groupchat");
-                                    let archived_nickname = from_full
-                                        .split('/')
-                                        .nth(1)
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let own_nickname = state
-                                        .own_jid
-                                        .split('/')
-                                        .next()
-                                        .unwrap_or(&state.own_jid)
-                                        .split('@')
-                                        .next()
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let is_self = if is_groupchat {
-                                        archived_nickname == own_nickname
-                                    } else {
-                                        from_bare == own_bare
-                                    };
-                                    let peer_jid = if is_self { to_bare } else { from_bare };
+                                    let (peer_jid, is_self) = mam_peer_jid(
+                                        &from_full,
+                                        &to_full,
+                                        &state.own_jid,
+                                        is_groupchat,
+                                    );
                                     if peer_jid.is_empty() {
                                         continue;
                                     }
@@ -1079,24 +1152,23 @@ async fn xmpp_event_loop(
                                         .attr("id")
                                         .unwrap_or("")
                                         .to_string();
+                                    let stanza_id = forwarded
+                                        .get_child("stanza-id", "urn:xmpp:sid:0")
+                                        .and_then(|stanza| stanza.attr("id"))
+                                        .or_else(|| {
+                                            archived
+                                                .get_child("stanza-id", "urn:xmpp:sid:0")
+                                                .and_then(|stanza| stanza.attr("id"))
+                                        })
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let msg_id = if !stanza_id.is_empty() {
+                                        stanza_id
+                                    } else {
+                                        msg_id
+                                    };
                                     let group_room = if is_groupchat {
-                                        let from_room = from_full
-                                            .split('/')
-                                            .next()
-                                            .unwrap_or(&from_full)
-                                            .to_string();
-                                        let to_room = to_full
-                                            .split('/')
-                                            .next()
-                                            .unwrap_or(&to_full)
-                                            .to_string();
-                                        if from_room.contains("@conference.") {
-                                            Some(from_room)
-                                        } else if to_room.contains("@conference.") {
-                                            Some(to_room)
-                                        } else {
-                                            None
-                                        }
+                                        muc_room_from_jids(&from_full, &to_full)
                                     } else {
                                         None
                                     };
@@ -1148,13 +1220,18 @@ async fn xmpp_event_loop(
                             if msg.type_ == MessageType::Groupchat {
                                 info!("Received MUC message from {}", from_jid);
                             }
+                            let to_jid = msg
+                                .to
+                                .as_ref()
+                                .map(|jid| jid.to_string())
+                                .unwrap_or_else(|| state.own_jid.clone());
                             let msg_id = msg.id.as_ref()
                                 .map(|id| id.0.clone())
                                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                             let xmpp_msg = XmppMessage {
                                 id: msg_id,
                                 from: from_jid.clone(),
-                                to: state.own_jid.clone(),
+                                to: to_jid,
                                 body: body_text.clone(),
                                 timestamp: {
                                     let seconds = std::time::SystemTime::now()
@@ -1178,16 +1255,10 @@ async fn xmpp_event_loop(
                                         })
                                         .unwrap_or(false)
                                 } else {
-                                    false
+                                    live_individual_is_self(&from_jid, &state.own_jid)
                                 },
                                 group_room: if msg.type_ == MessageType::Groupchat {
-                                    Some(
-                                        from_jid
-                                            .split('/')
-                                            .next()
-                                            .unwrap_or(&from_jid)
-                                            .to_string(),
-                                    )
+                                    Some(muc_room_jid(&from_jid))
                                 } else {
                                     None
                                 },
@@ -1210,23 +1281,6 @@ async fn xmpp_event_loop(
                         if pres.type_ == PresenceType::Subscribe {
                             let from_jid = pres.from.map(|j| j.to_string()).unwrap_or_default();
                             if !from_jid.is_empty() {
-                                #[cfg(debug_assertions)]
-                                {
-                                    let bare = from_jid.split('/').next().unwrap_or(&from_jid);
-                                    let local = bare.split('@').next().unwrap_or("");
-                                    if ["testuser", "kampelo", "ivokds"].contains(&local) {
-                                        if let Ok(contact) = bare.parse::<jid::BareJid>() {
-                                            let mut subscribed = Presence::new(PresenceType::Subscribed);
-                                            subscribed.to = Some(jid::Jid::from(contact.clone()));
-                                            let _ = client.send_stanza(Stanza::Presence(subscribed)).await;
-
-                                            let mut subscribe = Presence::new(PresenceType::Subscribe);
-                                            subscribe.to = Some(jid::Jid::from(contact));
-                                            let _ = client.send_stanza(Stanza::Presence(subscribe)).await;
-                                        }
-                                        continue;
-                                    }
-                                }
                                 // Buffer for later retrieval (handles race with frontend mount)
                                 {
                                     let mut subs = state.pending_subscriptions.lock().await;
@@ -1326,7 +1380,15 @@ async fn xmpp_event_loop(
                                         status: status_text,
                                     };
                                     // Write to cache so MainPage can replay on mount
-                                    state.presence_cache.lock().await.insert(bare_jid, xmpp_pres.clone());
+                                    let xmpp_pres = {
+                                        let mut cache = state.presence_cache.lock().await;
+                                        update_presence_resource(
+                                            &mut cache,
+                                            &jid_full,
+                                            xmpp_pres.availability.clone(),
+                                            xmpp_pres.status.clone(),
+                                        )
+                                    };
                                     if let Err(e) = app_handle.emit("xmpp_presence_update", &xmpp_pres) {
                                         error!("Failed to emit xmpp_presence_update: {}", e);
                                     }
@@ -1375,6 +1437,24 @@ async fn xmpp_event_loop(
                                     if let Err(e) = app_handle.emit("xmpp_roster_received", &contacts) {
                                         error!("Failed to emit xmpp_roster_received: {}", e);
                                     }
+                                    for item in &roster.items {
+                                        if matches!(
+                                            item.subscription,
+                                            Subscription::Both | Subscription::From
+                                        ) {
+                                            let mut probe =
+                                                Presence::new(PresenceType::Probe);
+                                            probe.to = Some(jid::Jid::from(item.jid.clone()));
+                                            if let Err(e) =
+                                                client.send_stanza(Stanza::Presence(probe)).await
+                                            {
+                                                error!(
+                                                    "Failed to probe presence for '{}': {}",
+                                                    item.jid, e
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             // Roster push from server (subscription state changes, new contacts)
@@ -1399,6 +1479,30 @@ async fn xmpp_event_loop(
                                         if let Err(e) = app_handle.emit("xmpp_roster_push", &push) {
                                             error!("Failed to emit xmpp_roster_push: {}", e);
                                         }
+                                        if matches!(
+                                            item.subscription,
+                                            Subscription::Both | Subscription::From
+                                        ) {
+                                            let mut probe = Presence::new(PresenceType::Probe);
+                                            probe.to = Some(jid::Jid::from(item.jid.clone()));
+                                            if let Err(e) =
+                                                client.send_stanza(Stanza::Presence(probe)).await
+                                            {
+                                                error!(
+                                                    "Failed to probe presence for '{}': {}",
+                                                    item.jid, e
+                                                );
+                                            }
+                                        } else if matches!(
+                                            item.subscription,
+                                            Subscription::Remove | Subscription::None
+                                        ) {
+                                            state
+                                                .presence_cache
+                                                .lock()
+                                                .await
+                                                .remove(&item.jid.to_string());
+                                        }
                                     }
                                 }
                             }
@@ -1413,6 +1517,7 @@ async fn xmpp_event_loop(
                             s.jid = None;
                             s.error = Some(err.to_string());
                         }
+                        state.presence_cache.lock().await.clear();
                         // Signal auth failure back to connect() if it's still waiting
                         if let Some(tx) = auth_result.take() {
                             let _ = tx.send(Err(err.to_string()));
@@ -1438,7 +1543,8 @@ async fn xmpp_event_loop(
                     Some(OutgoingCmd::SendMessage { to, body }) => {
                         match to.parse::<jid::BareJid>() {
                             Ok(to_jid) => {
-                                let msg = XmppMsg::new(jid::Jid::from(to_jid)).with_body(Default::default(), body);
+                                let msg = XmppMsg::chat(jid::Jid::from(to_jid))
+                                    .with_body(Default::default(), body);
                                 if let Err(e) = client.send_stanza(Stanza::Message(msg)).await {
                                     error!("Failed to send message stanza: {}", e);
                                 }
@@ -1565,9 +1671,20 @@ async fn xmpp_event_loop(
                             _ => error!("Invalid MUC removal room='{}' member='{}'", room_jid, member_jid),
                         }
                     }
-                    Some(OutgoingCmd::SetPresence { show, status_text }) => {
+                    Some(OutgoingCmd::SetPresence {
+                        show,
+                        status_text,
+                        unavailable,
+                    }) => {
                         // Remember the current show value for BroadcastPresence
                         *state.current_show.lock().await = show.clone();
+                        if unavailable {
+                            let presence = Presence::unavailable();
+                            if let Err(e) = client.send_stanza(Stanza::Presence(presence)).await {
+                                error!("Failed to send unavailable presence stanza: {}", e);
+                            }
+                            continue;
+                        }
                         let mut presence = Presence::available();
                         if let Some(show_str) = show {
                             presence = match show_str.as_str() {
@@ -1831,4 +1948,122 @@ async fn xmpp_event_loop(
         }
     }
     info!("XMPP event loop terminated");
+}
+
+#[cfg(test)]
+mod presence_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_busy_over_online_resources() {
+        let mut cache = PresenceCache::new();
+        update_presence_resource(
+            &mut cache,
+            "friend@localhost/phone",
+            Availability::Online,
+            None,
+        );
+        let aggregate = update_presence_resource(
+            &mut cache,
+            "friend@localhost/desktop",
+            Availability::Busy,
+            Some("In a call".to_string()),
+        );
+
+        assert_eq!(aggregate.jid, "friend@localhost");
+        assert!(matches!(aggregate.availability, Availability::Busy));
+        assert_eq!(aggregate.status.as_deref(), Some("In a call"));
+    }
+
+    #[test]
+    fn unavailable_resource_does_not_hide_another_resource() {
+        let mut cache = PresenceCache::new();
+        update_presence_resource(
+            &mut cache,
+            "friend@localhost/phone",
+            Availability::Away,
+            None,
+        );
+        update_presence_resource(
+            &mut cache,
+            "friend@localhost/desktop",
+            Availability::Online,
+            None,
+        );
+        let aggregate = update_presence_resource(
+            &mut cache,
+            "friend@localhost/phone",
+            Availability::Offline,
+            None,
+        );
+
+        assert_eq!(aggregate.jid, "friend@localhost");
+        assert!(matches!(aggregate.availability, Availability::Online));
+    }
+
+    #[test]
+    fn last_unavailable_resource_removes_contact_from_cache() {
+        let mut cache = PresenceCache::new();
+        update_presence_resource(
+            &mut cache,
+            "friend@localhost/desktop",
+            Availability::Online,
+            None,
+        );
+        let aggregate = update_presence_resource(
+            &mut cache,
+            "friend@localhost/desktop",
+            Availability::Offline,
+            None,
+        );
+
+        assert!(matches!(aggregate.availability, Availability::Offline));
+        assert!(!cache.contains_key("friend@localhost"));
+    }
+
+    #[test]
+    fn individual_outgoing_echo_is_self_by_bare_jid() {
+        assert!(live_individual_is_self(
+            "friend@localhost",
+            "friend@localhost/mobile"
+        ));
+        assert!(live_individual_is_self(
+            "pedro@localhost/resource",
+            "pedro@localhost"
+        ));
+        assert!(!live_individual_is_self(
+            "friend@localhost/resource",
+            "pedro@localhost"
+        ));
+    }
+
+    #[test]
+    fn muc_message_routes_to_bare_room_jid() {
+        assert_eq!(
+            muc_room_jid("room@conference.localhost/pedro"),
+            "room@conference.localhost"
+        );
+        assert_eq!(bare_xmpp_jid("friend@localhost/mobile"), "friend@localhost");
+    }
+
+    #[test]
+    fn mam_routes_individual_and_muc_messages() {
+        let (peer, is_self) = mam_peer_jid(
+            "pedro@localhost/mobile",
+            "friend@localhost",
+            "pedro@localhost",
+            false,
+        );
+        assert_eq!(peer, "friend@localhost");
+        assert!(is_self);
+
+        let (peer, is_self) = mam_peer_jid(
+            "room@conference.localhost/pedro",
+            "pedro@localhost",
+            "pedro@localhost",
+            true,
+        );
+        assert_eq!(peer, "room@conference.localhost");
+        assert!(is_self);
+    }
 }

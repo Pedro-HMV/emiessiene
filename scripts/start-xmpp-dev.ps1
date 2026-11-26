@@ -55,7 +55,7 @@ function Get-ProsodyStatus {
 
 # Function to test XMPP port connectivity
 function Test-XMPPPort {
-    $connection = Test-NetConnection -ComputerName localhost -Port 5222 -WarningAction SilentlyContinue
+    $connection = Test-NetConnection -ComputerName localhost -Port 5223 -WarningAction SilentlyContinue
     return $connection.TcpTestSucceeded
 }
 
@@ -73,10 +73,10 @@ function Start-Prosody {
             
             # Test port accessibility
             if (Test-XMPPPort) {
-                Write-Host "✅ XMPP port 5222 is accessible from Windows" -ForegroundColor Green
+                Write-Host "✅ XMPP direct-TLS port 5223 is accessible from Windows" -ForegroundColor Green
                 return $true
             } else {
-                Write-Host "⚠️  Prosody is running but port 5222 is not accessible" -ForegroundColor Yellow
+                Write-Host "⚠️  Prosody is running but direct-TLS port 5223 is not accessible" -ForegroundColor Yellow
                 Write-Host "💡 Try restarting WSL: wsl --shutdown" -ForegroundColor Yellow
                 return $false
             }
@@ -138,7 +138,7 @@ function Show-ProsodyStatus {
         default { Write-Host "UNKNOWN ❓" -ForegroundColor Yellow }
     }
     
-    Write-Host "Port 5222: " -NoNewline
+    Write-Host "Port 5223: " -NoNewline
     if ($portOpen) {
         Write-Host "ACCESSIBLE ✅" -ForegroundColor Green
     } else {
@@ -196,6 +196,9 @@ function Start-Development {
     Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Gray
     
     try {
+        $env:NTO_XMPP_HOST = "localhost"
+        $env:NTO_XMPP_PORT = "5223"
+        $env:NTO_XMPP_ALLOW_INVALID_CERTS = "1"
         cargo tauri dev
     }
     catch {

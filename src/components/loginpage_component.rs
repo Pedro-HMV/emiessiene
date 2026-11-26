@@ -33,11 +33,6 @@ struct SetPresenceArgs {
 }
 
 #[derive(Serialize)]
-struct AddTestFriendArgs {
-    jid: String,
-}
-
-#[derive(Serialize)]
 struct UpdateDebugUsernameArgs {
     name: String,
 }
@@ -50,6 +45,7 @@ struct SaveLoginPrefsArgs {
     #[serde(rename = "autoSignIn")]
     auto_sign_in: bool,
     availability: String,
+    password: Option<String>,
 }
 
 #[component]
@@ -189,12 +185,7 @@ pub fn LoginPage() -> impl IntoView {
                                     // the xmpp_vcard_received listener will update it once vCard arrives
                                     let local_part =
                                         jid.split('@').next().unwrap_or(&jid).to_string();
-                                    let display_name = match local_part.as_str() {
-                                        "testuser" => "Pedro",
-                                        "kampelo" => "Kampelo",
-                                        "ivokds" => "Ivokds",
-                                        _ => local_part.as_str(),
-                                    };
+                                    let display_name = local_part.as_str();
                                     set_user.update(|user| {
                                         user.email = jid.clone();
                                         user.name = display_name.to_string();
@@ -225,43 +216,35 @@ pub fn LoginPage() -> impl IntoView {
                                         remember_me: remember_me_captured,
                                         auto_sign_in: auto_sign_in_captured,
                                         availability: avail_str.to_string(),
+                                        password: if auto_sign_in_captured {
+                                            Some(password_value.clone())
+                                        } else {
+                                            None
+                                        },
                                     }) {
-                                        let _ = invoke_catching("save_login_prefs", args).await;
-                                    }
-
-                                    // Send the availability the user selected (Online/Away/Busy)
-                                    if !matches!(availability_value, Availability::Offline) {
-                                        let _ = invoke_catching(
-                                            "xmpp_set_presence",
-                                            to_value(&SetPresenceArgs {
-                                                availability: availability_value.clone(),
-                                                status: None,
-                                            })
-                                            .unwrap(),
-                                        )
-                                        .await;
-                                    }
-
-                                    #[cfg(debug_assertions)]
-                                    {
-                                        let test_accounts = [
-                                            "testuser@localhost",
-                                            "kampelo@localhost",
-                                            "ivokds@localhost",
-                                        ];
-                                        for peer_jid in test_accounts {
-                                            if peer_jid != jid {
-                                                let _ = invoke_catching(
-                                                    "xmpp_add_contact",
-                                                    to_value(&AddTestFriendArgs {
-                                                        jid: peer_jid.to_string(),
-                                                    })
-                                                    .unwrap(),
-                                                )
-                                                .await;
-                                            }
+                                        match invoke_catching("save_login_prefs", args).await {
+                                            Ok(_) => log::info!(
+                                                "Saved login preferences (remember={}, auto_sign_in={})",
+                                                remember_me_captured,
+                                                auto_sign_in_captured
+                                            ),
+                                            Err(error) => log::error!(
+                                                "Failed to save login preferences: {:?}",
+                                                error
+                                            ),
                                         }
                                     }
+
+                                    // Send the availability the user selected, including Offline.
+                                    let _ = invoke_catching(
+                                        "xmpp_set_presence",
+                                        to_value(&SetPresenceArgs {
+                                            availability: availability_value.clone(),
+                                            status: None,
+                                        })
+                                        .unwrap(),
+                                    )
+                                    .await;
 
                                     // Listen for vCard response and update user name/flavour_text
                                     {
@@ -452,20 +435,33 @@ pub fn LoginPage() -> impl IntoView {
         </Show>
         <div id="login_container">
             <div id="login_title">
-                <span id="login_welcome">"Welcome to"</span>
-                <span id="login_product_name">"NTO"</span>
-                <span id="login_brand_subtitle">"Nostalgic Talk Online"</span>
+                <img
+                    src="/assets/NTO_identidade_visual/logo/NTO_logo_horizontal_780x300.png"
+                    alt="NTO - Nostalgic Talk Online"
+                    class="login-brand-logo"
+                />
             </div>
             <div id="login_avatar">
                 <div
                     id="login_avatar_img"
                     style="width: 150px; height: 150px; border-radius: 10px;"
-                ></div>
+                >
+                    <img
+                        src="/assets/NTO_identidade_visual/icon/NTO_icon_128.png"
+                        alt=""
+                        class="login-app-logo"
+                    />
+                </div>
             </div>
-            <form id="login_form">
+            <form id="login_form" autocomplete="off" data-form-type="other">
                 <input
                     type="text"
                     id="login_username"
+                    name="nto_login_user"
+                    autocomplete="off"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-form-type="other"
                     placeholder="Username"
                     prop:value=username
                     on:input=move |ev| set_username.set(event_target_value(&ev))
@@ -474,6 +470,11 @@ pub fn LoginPage() -> impl IntoView {
                 <input
                     type="password"
                     id="login_password"
+                    name="nto_login_password"
+                    autocomplete="off"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-form-type="other"
                     placeholder="Password"
                     prop:value=password
                     on:input=move |ev| set_password.set(event_target_value(&ev))

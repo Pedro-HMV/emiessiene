@@ -45,6 +45,48 @@ pub fn App() -> impl IntoView {
     let messages: RwSignal<MessageStore> = RwSignal::new(HashMap::new());
     let groups: RwSignal<GroupStore> = RwSignal::new(HashMap::new());
     let (pending_group_invites, set_pending_group_invites) = signal(Vec::<GroupInvite>::new());
+    let (auto_login_route, set_auto_login_route) = signal(false);
+
+    spawn_local({
+        let set_user = set_user;
+        let set_auto_login_route = set_auto_login_route;
+        async move {
+            let status_result = invoke("get_auto_login_status", JsValue::null()).await;
+            if let Ok(status) = from_value::<serde_json::Value>(status_result) {
+                leptos::logging::log!(
+                    "Auto-login status: enabled={}, jid={}, credential_available={}",
+                    status["enabled"].as_bool().unwrap_or(false),
+                    status["jid"].as_str().unwrap_or(""),
+                    status["credential_available"].as_bool().unwrap_or(false)
+                );
+            }
+            let result = invoke("xmpp_auto_login", JsValue::null()).await;
+            if let Ok(response) = from_value::<serde_json::Value>(result) {
+                if response["success"].as_bool().unwrap_or(false) {
+                    let jid = response["jid"].as_str().unwrap_or("").to_string();
+                    let availability = match response["availability"].as_str() {
+                        Some("Away") => Availability::Away,
+                        Some("Busy") => Availability::Busy,
+                        Some("Offline") => Availability::Offline,
+                        _ => Availability::Online,
+                    };
+                    set_user.update(|user| {
+                        user.email = jid;
+                        user.availability = availability;
+                        if user.name.is_empty() {
+                            user.name = "User".to_string();
+                        }
+                    });
+                    set_auto_login_route.set(true);
+                } else {
+                    leptos::logging::warn!(
+                        "Auto-login not completed: {:?}",
+                        response["reason"].as_str().unwrap_or("unknown")
+                    );
+                }
+            }
+        }
+    });
 
     // Global MUC invite listener. It is intentionally separate from message handling
     // so invitations remain available even when no chat route is mounted.
@@ -340,6 +382,7 @@ pub fn App() -> impl IntoView {
         spawn_local(async move {
             let args = JsValue::null();
             let _ = invoke("xmpp_disconnect", args).await;
+            let _ = invoke("clear_saved_login", JsValue::null()).await;
         });
         set_user.set(User {
             name: String::new(),
@@ -373,15 +416,22 @@ pub fn App() -> impl IntoView {
 
     let nudge_route_view = nudge_route;
     let set_nudge_route_view = set_nudge_route;
+    let auto_login_route_view = auto_login_route;
+    let set_auto_login_route_view = set_auto_login_route;
 
     view! {
         <Router>
             {move || {
                 let navigate = use_navigate();
-                let route = nudge_route_view.get();
-                if let Some(route) = route {
-                    navigate(&route, Default::default());
-                    set_nudge_route_view.set(None);
+                if auto_login_route_view.get() {
+                    navigate("/main", Default::default());
+                    set_auto_login_route_view.set(false);
+                } else {
+                    let route = nudge_route_view.get();
+                    if let Some(route) = route {
+                        navigate(&route, Default::default());
+                        set_nudge_route_view.set(None);
+                    }
                 }
                 view! { <></> }
             }}
